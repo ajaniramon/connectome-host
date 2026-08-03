@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Changed
+
+- **The public triumvirate recipes boot from a fresh clone.**
+  `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
+  an org-internal adapter that isn't publicly available — with `NOTION_*` env
+  vars unset the block failed recipe load, and with them set it died at spawn
+  on the dangling `../syncntn` path. Notion is now an add-a-block opt-in,
+  documented in SETUP.md and TRIUMVIRATE-SETUP.md (the miner prompt's
+  `syncntn--*` tool-name contract is unchanged). `triumvirate.json` declares
+  webui Basic-Auth defaulting to `admin`/`admin` (override via
+  `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env`) instead of bare
+  `"webui": true`, which the non-loopback bind guard refuses to start.
+
+### Fixed
+
+- **`mcpServers.<id>.source` accepts cook's npm registry form.**
+  `validateRecipe` demanded `source.url`, but connectome-cook's source grammar
+  also has `{ "npm": "pkg@version" }` — which the shipped knowledge-miner
+  recipe uses for its gitlab server, so that recipe failed to load
+  (`mcpServers.gitlab.source.url must be a non-empty string`). Exactly one of
+  `url` / `npm` is now required; the field remains build-tooling metadata,
+  ignored at runtime.
+
 ## 0.7.4 — 2026-08-03
 
 ### Changed
