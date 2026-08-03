@@ -69,17 +69,17 @@ Works with both gitlab.com and self-hosted GitLab instances.
 
 No separate installation needed — the recipe uses `npx` to run `@zereight/mcp-gitlab` on demand.
 
-### Notion (optional, via an MCP server)
+### Notion (optional, via an MCP server — not included by default)
 
-If you want the agent to read your Notion workspace, point the recipe at any MCP server that exposes Notion search and page-read tools. The recipe's template entry is named `syncntn` after the particular Notion MCP adapter it was developed against, but the key is just a label — any Notion MCP server works, as long as its exposed tool names match what the system prompt references (`syncntn--search_pages`, `syncntn--get_page_markdown`, and friends). If your server uses different tool names, either rename the MCP key and update the prompt, or skip Notion entirely by removing the block.
+The recipe ships **without** a Notion server: the adapter its prompt was developed against (`syncntn`) is not publicly available. If you want the agent to read your Notion workspace, add an `mcpServers` entry pointing at any MCP server that exposes Notion search and page-read tools. The entry name `syncntn` is just a label — any Notion MCP server works, as long as its exposed tool names match what the system prompt references (`syncntn--search_pages`, `syncntn--get_page_markdown`, and friends). If your server uses different tool names, either name the MCP key `syncntn` and update the prompt, or accept that the agent will discover the tools under whatever names they export.
 
 Typical setup:
 
 1. Install and start your Notion MCP server somewhere the recipe can launch it.
 2. Note any configuration it needs (API credentials, workspace ID, storage URL).
-3. Fill those values into the recipe's `syncntn` env block in Step 3 below.
+3. Add a `syncntn` block with those values to the recipe in Step 3 below.
 
-Don't have a Notion MCP server? Remove the `syncntn` entry from the recipe — the agent will adapt and work with whatever sources remain.
+Don't have a Notion MCP server? Skip this — the agent adapts and works with whatever sources remain.
 
 ### DuckDuckGo web search (optional, but enabled by default)
 
@@ -120,8 +120,10 @@ Edit `my-recipe.json` and replace the placeholder values in `mcpServers`:
         "ZULIP_RC_PATH": "./.zuliprc"          // path to your .zuliprc
       }
     },
+    // Optional — NOT in the shipped recipe. Add only if you set up a
+    // Notion MCP server (see Step 2 above):
     "syncntn": {
-      "command": "../syncntn/services/mcp/start_mcp_local.sh",
+      "command": "../your-notion-mcp/start.sh",
       "env": {
         "STORAGE_URL": "http://localhost:8000",
         "WORKSPACE_ID": "YOUR_WORKSPACE_ID"    // <-- replace this

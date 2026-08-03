@@ -32,13 +32,6 @@
         }
       }
     },
-    "syncntn": {
-      "command": "../syncntn/services/mcp/start_mcp_local.sh",
-      "env": {
-        "STORAGE_SERVICE_URL": "${NOTION_STORAGE_URL}",
-        "WORKSPACE_ID": "${NOTION_WORKSPACE_ID}"
-      }
-    },
     "gitlab": {
       "command": "npx",
       "args": [

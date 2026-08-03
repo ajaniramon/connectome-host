@@ -138,23 +138,26 @@ ANTHROPIC_API_KEY=sk-ant-...
 ZULIP_CHANNEL=your-channel-name
 ```
 
-Optional — **only** if you want the miner to extract from those sources (otherwise remove the relevant `mcpServers` block from `recipes/knowledge-miner.json` and skip these):
+Optional — **only** if you want the miner to extract from GitLab (otherwise remove the `gitlab` block from `recipes/knowledge-miner.json` and skip these):
 
 ```ini
 # GitLab (knowledge-miner.json: gitlab)
 GITLAB_TOKEN=glpat-...
 GITLAB_API_URL=https://gitlab.example.com/api/v4
+```
 
-# Notion (knowledge-miner.json: syncntn)
-NOTION_STORAGE_URL=http://localhost:8000
-NOTION_WORKSPACE_ID=...
+Optional — the conductor's web UI is protected by Basic-Auth that defaults to `admin` / `admin`. Fine for a laptop; **change it** the moment the machine is reachable by anyone else:
+
+```ini
+WEBUI_USERNAME=...
+WEBUI_PASSWORD=...
 ```
 
 Bun auto-loads `.env`, so nothing else to wire. If a recipe references a `${VAR}` you haven't set, the child's startup will fail with a clear message telling you which variable is missing and which recipe referenced it.
 
 ## Step 6: Decide which data sources you want
 
-The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, Notion, GitLab, and DuckDuckGo** (public web). The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
+The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, GitLab, and DuckDuckGo** (public web); a **Notion** connection can be added if you run a Notion MCP server. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
 
 You decide which sources are active by whether you **set the matching env vars** and whether you **keep the matching mcpServers block in the recipe**.
 
@@ -175,16 +178,28 @@ No separate install — the recipe runs `npx @zereight/mcp-gitlab` on demand.
 
 To disable: remove the `gitlab` block from `recipes/knowledge-miner.json`. If you leave it in but don't set the env vars, the child will fail to start with a message like `Recipe "recipes/knowledge-miner.json" references environment variable ${GITLAB_TOKEN} which is not set.` — that's the system telling you to either fill in the env var or delete the block.
 
-### Notion (optional)
+### Notion (optional, off by default)
 
-To enable: install a Notion MCP server (the recipe's template is named `syncntn`; any MCP server with matching tool names works — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server) for selection caveats) and set:
+The recipe ships **without** a Notion server — the adapter it was developed against (`syncntn`) is not publicly available, so a default block would only produce a startup failure. The miner's system prompt still describes the `syncntn--*` tools; the agent simply won't have them until you wire a server in.
+
+To enable: install a Notion MCP server (any server whose tool names match what the prompt references — see [SETUP.md → Notion](./SETUP.md#notion-optional-via-an-mcp-server) for selection caveats), then add a block to `recipes/knowledge-miner.json` under `mcpServers`:
+
+```jsonc
+"syncntn": {
+  "command": "../your-notion-mcp/start.sh",   // however your server is launched
+  "env": {
+    "STORAGE_SERVICE_URL": "${NOTION_STORAGE_URL}",
+    "WORKSPACE_ID": "${NOTION_WORKSPACE_ID}"
+  }
+}
+```
+
+and set the referenced vars in `.env`:
 
 ```ini
 NOTION_STORAGE_URL=http://localhost:8000
 NOTION_WORKSPACE_ID=...
 ```
-
-To disable: remove the `syncntn` block from `recipes/knowledge-miner.json`. Same behavior as above — unset env + kept block = startup failure with a clear message.
 
 ### DuckDuckGo web search (optional, enabled by default)
 
@@ -209,12 +224,12 @@ To disable: remove the `ddg` block from `recipes/knowledge-miner.json`. The agen
 
 ### Summary table
 
-| Source | Keep the block in recipe? | Env vars needed |
+| Source | Block in recipe? | Env vars needed |
 |---|---|---|
-| Zulip | Yes | (configured via `.zuliprc`, no `${VAR}`) |
-| GitLab | Yes if using, remove otherwise | `GITLAB_TOKEN`, `GITLAB_API_URL` |
-| Notion | Yes if using, remove otherwise | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
-| DuckDuckGo | Yes if you want public web search, remove otherwise | none (no API key) |
+| Zulip | Yes (default) | (configured via `.zuliprc`, no `${VAR}`) |
+| GitLab | Yes (default) — remove if not using | `GITLAB_TOKEN`, `GITLAB_API_URL` |
+| Notion | **No** — add a `syncntn` block if using | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
+| DuckDuckGo | Yes (default) — remove if not using | none (no API key) |
 
 ### Tweaks you can still make to the recipe files
 
@@ -236,6 +251,8 @@ What you'll see:
 2. Over the next 30–60 seconds, the three children spawn in the background. Each one starts its own connectome-host process, connects to the Anthropic API, and boots its Zulip / workspace machinery.
 3. Press **Tab** a couple of times to cycle through view modes. One of them is the **process fleet** view — it lists the three children and their status. All three should reach **ready** (green). If any show **crashed** (red), jump to Troubleshooting.
 4. Ask the conductor `are all three ready?` — it'll run `fleet--list` and confirm. This also serves as a quick "am I set up correctly" smoke test.
+
+The conductor also serves a **web UI** on port 7340 (all interfaces, Basic-Auth). Credentials default to `admin` / `admin` unless you set `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env` — see Step 5. Open `http://localhost:7340` to watch the fleet from a browser.
 
 ### The four view modes
 
