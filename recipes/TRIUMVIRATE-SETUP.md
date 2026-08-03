@@ -157,7 +157,7 @@ Bun auto-loads `.env`, so nothing else to wire. If a recipe references a `${VAR}
 
 ## Step 6: Decide which data sources you want
 
-The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, GitLab, and DuckDuckGo** (public web); a **Notion** connection can be added if you run a Notion MCP server. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
+The miner child uses `recipes/knowledge-miner.json`, which comes pre-wired to talk to **Zulip, GitLab, and DuckDuckGo** (public web); **Notion** and **Scribe** (audio/video transcription) connections can be added — see their subsections below. The recipe itself references credentials via `${VAR}` placeholders — you don't edit the recipe to fill in secrets; you set the env vars in Step 5 and the framework substitutes at load time.
 
 You decide which sources are active by whether you **set the matching env vars** and whether you **keep the matching mcpServers block in the recipe**.
 
@@ -222,6 +222,42 @@ Web hits get tagged `[WEB: <url>]` in mined reports — internal `[SRC]` always 
 
 To disable: remove the `ddg` block from `recipes/knowledge-miner.json`. The agent will skip the public web.
 
+### Scribe — audio/video transcription (optional, off by default)
+
+The miner's prompt knows how to use [`dariakroshka/scribe-mcp`](https://github.com/dariakroshka/scribe-mcp) to transcribe recordings (via Google's Gemini API — media leaves your machine). The recipe ships without the block: it requires a Gemini API key and a sibling checkout, neither of which a demo should demand.
+
+To enable: install the server as a sibling of `connectome-host/`:
+
+```bash
+cd ..
+git clone https://github.com/dariakroshka/scribe-mcp.git
+cd scribe-mcp
+bun install
+cd ../connectome-host
+```
+
+then add this block to `recipes/knowledge-miner.json` under `mcpServers`:
+
+```jsonc
+"scribe": {
+  "command": "bun",
+  "args": ["../scribe-mcp/src/index.ts"],
+  "env": {
+    "GEMINI_API_KEY": "${GEMINI_API_KEY}",
+    "NOTION_API_KEY": "${NOTION_API_KEY:-}",           // only scribe--scribe_notion_page needs it
+    "SCRIBE_GLOSSARY_PATH": "./input/glossary.txt",
+    "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL:-}"  // optional domain glossary
+  },
+  "source": {
+    "url": "https://github.com/dariakroshka/scribe-mcp.git",
+    "install": { "runtime": "bun", "run": "bun install --frozen-lockfile" },
+    "inContainer": { "path": "/scribe-mcp" }
+  }
+}
+```
+
+and set `GEMINI_API_KEY=...` in `.env`.
+
 ### Summary table
 
 | Source | Block in recipe? | Env vars needed |
@@ -230,6 +266,7 @@ To disable: remove the `ddg` block from `recipes/knowledge-miner.json`. The agen
 | GitLab | Yes (default) — remove if not using | `GITLAB_TOKEN`, `GITLAB_API_URL` |
 | Notion | **No** — add a `syncntn` block if using | `NOTION_STORAGE_URL`, `NOTION_WORKSPACE_ID` |
 | DuckDuckGo | Yes (default) — remove if not using | none (no API key) |
+| Scribe | **No** — add a `scribe` block if using | `GEMINI_API_KEY` (+ optional `NOTION_API_KEY`, `SCRIBE_GLOSSARY_URL`) |
 
 ### Tweaks you can still make to the recipe files
 

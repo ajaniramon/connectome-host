@@ -98,6 +98,10 @@ cd ../connectome-host
 
 The recipe expects the entry-point script at `../duckduckgo-mcp-server/.venv/bin/duckduckgo-mcp-server`. No API key needed. Don't want public-web access? Remove the `ddg` block from the recipe.
 
+### Scribe — audio/video transcription (optional, not included by default)
+
+The miner's prompt also knows how to drive [`dariakroshka/scribe-mcp`](https://github.com/dariakroshka/scribe-mcp) for transcribing recordings. It needs a Gemini API key (media is uploaded to Google's Gemini API) and a sibling checkout, so the shipped recipe omits it. To enable: clone scribe-mcp as a sibling of `connectome-host/`, run `bun install` in it, add a `scribe` block under `mcpServers` (see the [Triumvirate guide's Scribe section](./TRIUMVIRATE-SETUP.md#scribe--audiovideo-transcription-optional-off-by-default) for the exact JSON), and set `GEMINI_API_KEY` in `.env`.
+
 ## Step 3: Configure the recipe
 
 Copy the template recipe and fill in your credentials:

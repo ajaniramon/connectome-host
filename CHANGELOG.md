@@ -8,9 +8,13 @@
   `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
   an org-internal adapter that isn't publicly available — with `NOTION_*` env
   vars unset the block failed recipe load, and with them set it died at spawn
-  on the dangling `../syncntn` path. Notion is now an add-a-block opt-in,
-  documented in SETUP.md and TRIUMVIRATE-SETUP.md (the miner prompt's
-  `syncntn--*` tool-name contract is unchanged). `triumvirate.json` declares
+  on the dangling `../syncntn` path. The `scribe` block is dropped for the
+  same reason: it hard-required `GEMINI_API_KEY` and a `../scribe-mcp`
+  sibling checkout, neither mentioned anywhere in the setup guides — a
+  guide-following fresh install always got a crashed miner. Notion and
+  Scribe are now add-a-block opt-ins, documented in SETUP.md and
+  TRIUMVIRATE-SETUP.md (the miner prompt's tool-name contracts are
+  unchanged). `triumvirate.json` declares
   webui Basic-Auth defaulting to `admin`/`admin` (override via
   `WEBUI_USERNAME` / `WEBUI_PASSWORD` in `.env`) instead of bare
   `"webui": true`, which the non-loopback bind guard refuses to start.
