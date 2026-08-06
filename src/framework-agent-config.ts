@@ -8,6 +8,9 @@ export type FrameworkAgentConfig = AgentConfig & {
   // while remaining structurally compatible with older installs.
   refusalHandling?: Recipe['agent']['refusalHandling'];
   sameRoundThinkTextPolicy?: 'public' | 'private';
+  /** Provider hard context cap (AF #92 mid-turn projection restart);
+   *  inert on AF releases before af#98. */
+  physicalWindowTokens?: number;
 };
 
 /**
