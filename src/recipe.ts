@@ -924,8 +924,13 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   const agent = obj.agent as Record<string, unknown>;
-  if (typeof agent.systemPrompt !== 'string' || !agent.systemPrompt) {
-    throw new Error('Recipe agent must have a "systemPrompt" string');
+  // Absent or empty systemPrompt is a valid configuration: '' is dropped at
+  // the provider boundary (membrane omits falsy `system`), so the wire
+  // request carries no system block at all.
+  if (agent.systemPrompt === undefined || agent.systemPrompt === null) {
+    agent.systemPrompt = '';
+  } else if (typeof agent.systemPrompt !== 'string') {
+    throw new Error('Recipe agent "systemPrompt" must be a string when present');
   }
 
   if (agent.provider !== undefined &&
