@@ -29,6 +29,19 @@
   `url` / `npm` is now required; the field remains build-tooling metadata,
   ignored at runtime.
 
+### Added
+
+- **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
+
+- **`BEDROCK_BASE_URL` env hook** for the bedrock provider — mirrors
+  `ANTHROPIC_BASE_URL`, routing bedrock-runtime calls through an inference
+  gateway (gate.animalabs.ai/bedrock/<credSet>). The gate reads the agent
+  token from the SigV4 Credential (`AWS_ACCESS_KEY_ID` slot), discards the
+  client signature, and re-signs with real AWS creds. First user: Princess,
+  moved off the first-party Anthropic API (classifier "bio" false-positive
+  streak) onto Bedrock Sonnet 4.5 via gate apse1 — needs membrane ≥1dcd4e3
+  for `global.` inference-profile id pass-through.
+
 ## 0.7.4 — 2026-08-03
 
 ### Changed

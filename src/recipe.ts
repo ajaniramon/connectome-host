@@ -55,6 +55,10 @@ export interface RecipeStrategy {
   targetChunkTokens?: number;
   mergeThreshold?: number;
   summaryTargetTokens?: number;
+  /** Standing production target: keep the summary forest deep enough to fit
+   *  this budget, enabling a later live-budget descent with no fold-storm and
+   *  a single KV invalidation (see context-manager productionBudgetTokens). */
+  productionBudgetTokens?: number;
   l1BudgetTokens?: number;
   l2BudgetTokens?: number;
   l3BudgetTokens?: number;
@@ -396,8 +400,9 @@ export interface RecipeCredentialFileField {
 
 /**
  * Subset of MountConfig exposed to recipes.
- * Intentionally omits watchDebounceMs, followSymlinks, and maxFileSize —
- * these are implementation details best left to framework defaults.
+ * Intentionally omits watchDebounceMs and followSymlinks. The maximum file
+ * size is operator-configurable because binary service artifacts may
+ * legitimately exceed the conservative framework default.
  */
 export interface RecipeWorkspaceMount {
   name: string;
@@ -405,6 +410,8 @@ export interface RecipeWorkspaceMount {
   mode?: 'read-write' | 'read-only';
   watch?: 'always' | 'on-agent-action' | 'never';
   ignore?: string[];
+  /** Maximum file size in bytes (defaults to the framework's 5 MiB limit). */
+  maxFileSize?: number;
   /**
    * Request inference when files in this mount change. Pair with
    * `watch: 'always'` so chokidar actually observes the mount.
@@ -925,8 +932,13 @@ export function validateRecipe(raw: unknown): Recipe {
   }
 
   const agent = obj.agent as Record<string, unknown>;
-  if (typeof agent.systemPrompt !== 'string' || !agent.systemPrompt) {
-    throw new Error('Recipe agent must have a "systemPrompt" string');
+  // Absent or empty systemPrompt is a valid configuration: '' is dropped at
+  // the provider boundary (membrane omits falsy `system`), so the wire
+  // request carries no system block at all.
+  if (agent.systemPrompt === undefined || agent.systemPrompt === null) {
+    agent.systemPrompt = '';
+  } else if (typeof agent.systemPrompt !== 'string') {
+    throw new Error('Recipe agent "systemPrompt" must be a string when present');
   }
 
   if (agent.provider !== undefined &&
