@@ -271,13 +271,21 @@ export interface RecipeMcpServer {
 
 /**
  * How to obtain and install an MCP server at deploy time.  Consumed by
- * build tooling like connectome-cook.  All fields optional-at-the-schema-
- * layer except `url`; tools may require more depending on the install
- * pattern they're generating.
+ * build tooling like connectome-cook.  Exactly one of `url` (git form) or
+ * `npm` (registry form) must be set; tools may require more depending on
+ * the install pattern they're generating.
  */
 export interface RecipeMcpServerSource {
-  /** Git URL to clone from. */
-  url: string;
+  /** Git URL to clone from. Mutually exclusive with `npm`. */
+  url?: string;
+  /**
+   * npm registry package spec (`pkg@version` / `@scope/pkg@version`) that
+   * build tooling bakes via a global install instead of a git clone —
+   * matches connectome-cook's `source.npm` grammar.  The git-form fields
+   * (`ref`, `install`, `inContainer`, ...) don't apply.  Mutually
+   * exclusive with `url`.
+   */
+  npm?: string;
   /**
    * Git ref: branch, tag, or commit SHA.  Default: "main".
    * If the value starts with "refs/" (e.g. "refs/pull/3/head"), it's
@@ -1142,8 +1150,16 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error(`mcpServers.${id}.source must be an object`);
         }
         const src = server.source as Record<string, unknown>;
-        if (typeof src.url !== 'string' || !src.url) {
-          throw new Error(`mcpServers.${id}.source.url must be a non-empty string`);
+        const hasSrcUrl = typeof src.url === 'string' && src.url;
+        const hasSrcNpm = typeof src.npm === 'string' && src.npm;
+        if (hasSrcUrl && hasSrcNpm) {
+          throw new Error(`mcpServers.${id}.source must not set both "url" and "npm"`);
+        }
+        if (!hasSrcUrl && !hasSrcNpm) {
+          throw new Error(
+            `mcpServers.${id}.source must have a non-empty "url" (git clone) ` +
+            `or "npm" (registry package spec) string`,
+          );
         }
         if (src.ref !== undefined && typeof src.ref !== 'string') {
           throw new Error(`mcpServers.${id}.source.ref must be a string`);

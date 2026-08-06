@@ -32,13 +32,6 @@
         }
       }
     },
-    "syncntn": {
-      "command": "../syncntn/services/mcp/start_mcp_local.sh",
-      "env": {
-        "STORAGE_SERVICE_URL": "${NOTION_STORAGE_URL}",
-        "WORKSPACE_ID": "${NOTION_WORKSPACE_ID}"
-      }
-    },
     "gitlab": {
       "command": "npx",
       "args": [
@@ -64,29 +57,6 @@
         "install": "pip-editable",
         "inContainer": {
           "path": "/duckduckgo-mcp-server"
-        }
-      }
-    },
-    "scribe": {
-      "command": "bun",
-      "args": [
-        "../scribe-mcp/src/index.ts"
-      ],
-      "env": {
-        "GEMINI_API_KEY": "${GEMINI_API_KEY}",
-        "NOTION_API_KEY": "${NOTION_API_KEY:-}",
-        "SCRIBE_GLOSSARY_PATH": "./input/glossary.txt",
-        "SCRIBE_GLOSSARY_URL": "${SCRIBE_GLOSSARY_URL:-}"
-      },
-      "source": {
-        "url": "https://github.com/dariakroshka/scribe-mcp.git",
-        "ref": "828ae8ba6ea83ce439ce6ba020ed0223cf096f82",
-        "install": {
-          "runtime": "bun",
-          "run": "bun install --frozen-lockfile"
-        },
-        "inContainer": {
-          "path": "/scribe-mcp"
         }
       }
     }
