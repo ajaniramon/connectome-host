@@ -589,6 +589,25 @@ export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   } catch {
     // Health reads never throw.
   }
+  // Compression DEBT per agent — the single-authority reduction from cm
+  // (healthy / degraded / critical + the numbers behind it). Every wedge of
+  // the 2026-08-06 five-resident day was weeks of silently-failing
+  // compression surfacing as a sudden budget crisis; this block is what
+  // lets fleet-watch (and later the resident notice, af #99) catch the
+  // debt while it is still cheap.
+  try {
+    const debt: Record<string, unknown> = {};
+    for (const agent of app.framework.getAllAgents()) {
+      const strategy = (agent.getContextManager() as unknown as {
+        getStrategy?: () => { getCompressionDebt?: () => unknown };
+      }).getStrategy?.();
+      const d = strategy?.getCompressionDebt?.();
+      if (d) debt[(agent as unknown as { name: string }).name] = d;
+    }
+    (snapshot as Record<string, unknown>).compressionDebt = debt;
+  } catch {
+    // Health reads never throw.
+  }
   // Rendered context COMPOSITION per agent — head / raw middle / summaries
   // by level / tail, as actually emitted by the last compile. Sourced from
   // the strategy's own render stats (already computed in-process), so it is
