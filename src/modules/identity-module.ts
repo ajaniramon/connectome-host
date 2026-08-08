@@ -422,13 +422,37 @@ export class IdentityModule implements Module {
       if (method === 'GET') return fail('`fromFile` needs a method with a body (POST or PUT)');
       const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
       if (!workspace) return fail('identity request: workspace module is not available for fromFile');
-      const read = await workspace.readBinary(input.fromFile);
-      if ('error' in read) return fail(`identity request: could not read ${input.fromFile}: ${read.error}`);
-      if (read.data.byteLength > UPLOAD_BODY_MAX) {
-        return fail(`file too large (${read.data.byteLength} > ${UPLOAD_BODY_MAX})`);
+      // Disk first, store second. An upload is egress: reading it through the
+      // append-only store would retain every byte forever and refuse anything
+      // binary or over the mount's maxFileSize — which is most media. Disk
+      // has neither problem. The store remains the fallback for a file the
+      // resident wrote through the workspace and never materialized.
+      const diskRead = (workspace as WorkspaceModule & {
+        readBinaryFromDisk?: (
+          path: string,
+          opts?: { maxBytes?: number },
+        ) => Promise<{ data: Buffer; absolutePath: string } | { error: string }>;
+      }).readBinaryFromDisk;
+      const fromDisk = diskRead
+        ? await diskRead.call(workspace, input.fromFile, { maxBytes: UPLOAD_BODY_MAX })
+        : { error: 'this host has no disk read path' };
+      let bytes: Buffer;
+      if (!('error' in fromDisk)) {
+        bytes = fromDisk.data;
+      } else {
+        const fromStore = await workspace.readBinary(input.fromFile);
+        if ('error' in fromStore) {
+          return fail(
+            `identity request: could not read ${input.fromFile}: ${fromDisk.error}; ${fromStore.error}`,
+          );
+        }
+        bytes = fromStore.data;
+      }
+      if (bytes.byteLength > UPLOAD_BODY_MAX) {
+        return fail(`file too large (${bytes.byteLength} > ${UPLOAD_BODY_MAX})`);
       }
       upload = {
-        bytes: read.data,
+        bytes,
         contentType:
           typeof input.contentType === 'string' && input.contentType
             ? input.contentType
