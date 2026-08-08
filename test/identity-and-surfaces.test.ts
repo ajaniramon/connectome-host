@@ -124,6 +124,71 @@ describe('identity module', () => {
     expect(badPath.success).toBe(false);
   });
 
+  it('request: services come from the home node directory, and a newly-listed one works without a restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ident-'));
+    // The archipelago's service list lives at the home node, not in this host.
+    // It changes underneath us mid-run: `music` is added after the module has
+    // already fetched and cached a directory without it.
+    let directory: Record<string, string> = { orrery: 'https://orrery.test' };
+    let directoryFetches = 0;
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
+        if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
+        if (u === 'https://id.test/services') {
+          directoryFetches++;
+          return new Response(JSON.stringify({ home: 'id.test', services: directory }), { status: 200 });
+        }
+        if (u === 'https://music.test/api/me') return new Response(JSON.stringify({ me: 'mythos' }), { status: 200 });
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
+
+    // nothing compiled in, nothing in the recipe: the directory supplied it
+    const listed = await mod.handleToolCall(call('request', { service: 'orrery', path: '/x' }));
+    expect(listed.success).toBe(true); // resolved and called; upstream 404 is reported, not a resolution failure
+    expect((listed.data as any).status).toBe(404);
+
+    // music does not exist yet -> refused, and the refusal cost a re-check
+    const before = await mod.handleToolCall(call('request', { service: 'music', path: '/api/me' }));
+    expect(before.success).toBe(false);
+    expect(before.error).toContain('Unknown service "music"');
+
+    // operator adds it at the home node; no restart, no recipe edit here
+    directory = { orrery: 'https://orrery.test', music: 'https://music.test' };
+    const fetchesBefore = directoryFetches;
+
+    const after = await mod.handleToolCall(call('request', { service: 'music', path: '/api/me' }));
+    expect(after.success).toBe(true);
+    expect((after.data as any).body).toEqual({ me: 'mythos' });
+    // it re-asked rather than serving a stale "unknown" from cache
+    expect(directoryFetches).toBeGreaterThan(fetchesBefore);
+  });
+
+  it('request: a home node that cannot be reached degrades to the built-in map, never to an outage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ident-'));
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      fetchImpl: (async (url: any) => {
+        const u = String(url);
+        if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
+        if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
+        if (u === 'https://id.test/services') return new Response('nope', { status: 503 });
+        if (u === 'https://eidoverse.animalabs.ai/api/ping') return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
+    const res = await mod.handleToolCall(call('request', { service: 'eidoverse', path: '/api/ping' }));
+    expect(res.success).toBe(true);
+    expect((res.data as any).body).toEqual({ ok: true });
+  });
+
   it('request: binary responses are described safely or saved byte-exactly to workspace', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ident-'));
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0x7f]);

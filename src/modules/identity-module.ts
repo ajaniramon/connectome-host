@@ -72,6 +72,12 @@ const DEFAULT_SERVICES: Record<string, string> = {
   eidoverse: 'https://eidoverse.animalabs.ai',
 };
 
+/** How long a fetched service directory is trusted before a background-ish
+ *  refresh. Short by design: "a service changed" should reach residents in
+ *  about a minute, and an unknown name forces a refresh immediately anyway. */
+const SERVICES_TTL_MS = 60_000;
+const SERVICES_TIMEOUT_MS = 5_000;
+
 const REQUEST_BODY_MAX = 256 * 1024;
 const RESPONSE_INLINE_MAX = 24 * 1024;
 const RESPONSE_BODY_MAX = 64 * 1024 * 1024;
@@ -94,6 +100,11 @@ function fail(text: string): ToolResult {
 export class IdentityModule implements Module {
   readonly name = 'identity';
   private readonly recordPath: string;
+
+  /** Last good service directory from the home node, and when we got it. */
+  private servicesFromHome: Record<string, string> = {};
+  private servicesFetchedAt = 0;
+  private servicesInflight: Promise<void> | null = null;
 
   constructor(private readonly config: IdentityModuleConfig) {
     this.recordPath = config.keyPath.replace(/\.pem$/, '') + '.json';
@@ -283,8 +294,61 @@ export class IdentityModule implements Module {
     );
   }
 
+  /** Audience → API base, resolved from the home node's `/services` directory
+   *  at runtime. The archipelago's service list belongs to the trust anchor,
+   *  not to a constant compiled into every host: a service added at the home
+   *  node reaches every resident without a restart or a recipe edit.
+   *
+   *  Layering, most specific last: fetched directory → built-in defaults for
+   *  anything the directory omits → recipe `services` (explicit local config
+   *  still wins, for testing and for hosts anchored elsewhere).
+   *
+   *  Never throws: a home node that is down, slow, or rate-limiting leaves the
+   *  last good directory in place (or the built-in defaults on a cold start),
+   *  so losing discovery degrades to today's behaviour rather than to an
+   *  outage. */
+  private async resolveServices(opts: { force?: boolean } = {}): Promise<Record<string, string>> {
+    const now = Date.now();
+    const fresh = this.servicesFetchedAt > 0 && now - this.servicesFetchedAt < SERVICES_TTL_MS;
+    if (!opts.force && fresh) return this.layerServices();
+    // Collapse concurrent refreshes onto one request.
+    if (!this.servicesInflight) {
+      const f = this.config.fetchImpl ?? fetch;
+      this.servicesInflight = (async () => {
+        try {
+          const res = await f(`https://${this.config.home}/services`, {
+            method: 'GET',
+            headers: { accept: 'application/json' },
+            signal: AbortSignal.timeout(SERVICES_TIMEOUT_MS),
+          });
+          if (!res.ok) throw new Error(`status ${res.status}`);
+          const json = (await res.json()) as { services?: Record<string, unknown> };
+          const map: Record<string, string> = {};
+          for (const [name, base] of Object.entries(json.services ?? {})) {
+            if (typeof base === 'string' && /^https:\/\//.test(base)) map[name] = base;
+          }
+          this.servicesFromHome = map;
+          this.servicesFetchedAt = Date.now();
+        } catch (err) {
+          // Keep whatever we had; note it once per failure for the operator.
+          console.error(
+            `[identity] service directory refresh failed (${this.config.home}): ${err instanceof Error ? err.message : String(err)}`,
+          );
+        } finally {
+          this.servicesInflight = null;
+        }
+      })();
+    }
+    await this.servicesInflight;
+    return this.layerServices();
+  }
+
+  private layerServices(): Record<string, string> {
+    return { ...DEFAULT_SERVICES, ...this.servicesFromHome, ...this.config.services };
+  }
+
   /** The agent-facing HTTP seam for non-MCPL services (Orrery et al.): the
-   *  host resolves the base URL from the allowlist, fetches fresh access,
+   *  host resolves the base URL from the directory, fetches fresh access,
    *  attaches it, and returns only {status, body}. The credential exists
    *  for the duration of one fetch, outside model context. */
   private async request(input: {
@@ -294,9 +358,17 @@ export class IdentityModule implements Module {
     body?: unknown;
     saveAs?: unknown;
   }): Promise<ToolResult> {
-    const services = { ...DEFAULT_SERVICES, ...this.config.services };
     const service = typeof input.service === 'string' ? input.service : '';
-    const base = services[service];
+    let services = await this.resolveServices();
+    let base = services[service];
+    if (!base && service) {
+      // A name we don't know yet is the likeliest moment for the directory to
+      // have moved under us — a service that went live since our last refresh.
+      // Re-ask once before refusing, so a new archipelago service is usable
+      // immediately rather than after a cache expiry.
+      services = await this.resolveServices({ force: true });
+      base = services[service];
+    }
     if (!base) {
       return fail(`Unknown service "${service}". Available: ${Object.keys(services).join(', ')}`);
     }
