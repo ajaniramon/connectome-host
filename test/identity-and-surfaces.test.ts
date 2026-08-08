@@ -16,6 +16,7 @@ import { IdentityModule } from '../src/modules/identity-module.ts';
 import { McplAdminModule } from '../src/modules/mcpl-admin-module.ts';
 import { ObserversModule } from '../src/modules/observers-module.ts';
 
+const REQUEST_BODY_MAX_FOR_TEST = 256 * 1024;
 const call = (name: string, input: unknown) => ({ id: 't1', name, input });
 
 function fakeHome(routes: Record<string, (body: any) => { status: number; json: unknown }>): typeof fetch {
@@ -187,6 +188,67 @@ describe('identity module', () => {
     const res = await mod.handleToolCall(call('request', { service: 'eidoverse', path: '/api/ping' }));
     expect(res.success).toBe(true);
     expect((res.data as any).body).toEqual({ ok: true });
+  });
+
+  it('request: fromFile uploads a workspace file byte-exactly, without the bytes touching context', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ident-'));
+    // A file far larger than the JSON body cap — the case that made this exist.
+    const audio = Buffer.alloc(REQUEST_BODY_MAX_FOR_TEST + 4096, 0);
+    audio.write('ID3', 0);
+    audio[audio.length - 1] = 0x7f;
+    let sentBody: Buffer | null = null;
+    let sentType = '';
+    const workspace = {
+      readBinary: async (path: string) =>
+        path === 'files/music/track.mp3' ? { data: audio } : { error: `File not found: ${path}` },
+      writeBinary: async () => ({ success: true }),
+    };
+    const mod = new IdentityModule({
+      keyPath: join(dir, 'k.pem'),
+      home: 'id.test',
+      services: { music: 'https://music.test' },
+      fetchImpl: (async (url: any, init?: any) => {
+        const u = String(url);
+        if (u.includes('/enroll')) return new Response(JSON.stringify({ sub: 'agent:a@id.test', token: 't0' }), { status: 200 });
+        if (u.includes('/token')) return new Response(JSON.stringify({ token: 'aid1.fresh.secret' }), { status: 200 });
+        if (u.includes('/services')) return new Response(JSON.stringify({ services: {} }), { status: 200 });
+        if (u === 'https://music.test/api/upload/1/audio') {
+          sentBody = Buffer.from(init?.body as Uint8Array);
+          sentType = String(init?.headers?.['content-type'] ?? '');
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response('{}', { status: 404 });
+      }) as typeof fetch,
+    });
+    (mod as any).ctx = { getModule: (n: string) => (n === 'workspace' ? workspace : null) };
+    await mod.handleToolCall(call('accept_invite', { invite: 'i', name: 'A' }));
+
+    const res = await mod.handleToolCall(
+      call('request', { service: 'music', path: '/api/upload/1/audio', method: 'PUT', fromFile: 'files/music/track.mp3' }),
+    );
+    expect(res.success).toBe(true);
+    // byte-exact, and typed from the extension rather than guessed by the model
+    expect(sentBody!.equals(audio)).toBe(true);
+    expect(sentType).toBe('audio/mpeg');
+    // a receipt, but never the payload itself, in the agent-visible result
+    expect((res.data as any).sent).toEqual({
+      path: 'files/music/track.mp3',
+      size: audio.byteLength,
+      contentType: 'audio/mpeg',
+    });
+    expect(JSON.stringify(res.data).length).toBeLessThan(1000);
+
+    // guard rails
+    const both = await mod.handleToolCall(
+      call('request', { service: 'music', path: '/x', method: 'PUT', body: { a: 1 }, fromFile: 'files/music/track.mp3' }),
+    );
+    expect(both.error).toContain('not both');
+    const onGet = await mod.handleToolCall(call('request', { service: 'music', path: '/x', fromFile: 'files/music/track.mp3' }));
+    expect(onGet.error).toContain('POST or PUT');
+    const missing = await mod.handleToolCall(
+      call('request', { service: 'music', path: '/x', method: 'PUT', fromFile: 'files/nope.mp3' }),
+    );
+    expect(missing.error).toContain('could not read');
   });
 
   it('request: binary responses are described safely or saved byte-exactly to workspace', async () => {

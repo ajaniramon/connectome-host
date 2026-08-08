@@ -79,6 +79,28 @@ const SERVICES_TTL_MS = 60_000;
 const SERVICES_TIMEOUT_MS = 5_000;
 
 const REQUEST_BODY_MAX = 256 * 1024;
+/** Uploads are bytes the host streams from a workspace file, not text the
+ *  model wrote, so the small JSON-body cap would be the wrong limit: a track
+ *  or a render is legitimately megabytes. Still bounded — one call should not
+ *  be able to push an unbounded file at a service. */
+const UPLOAD_BODY_MAX = 64 * 1024 * 1024;
+
+/** Enough to label the common uploads honestly; anything else is
+ *  application/octet-stream unless the caller says otherwise. */
+const CONTENT_TYPES: Record<string, string> = {
+  mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg',
+  opus: 'audio/opus', m4a: 'audio/mp4', aac: 'audio/aac',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+  json: 'application/json', txt: 'text/plain', md: 'text/markdown',
+  pdf: 'application/pdf', zip: 'application/zip',
+};
+
+function guessContentType(path: string): string {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  return CONTENT_TYPES[ext] ?? 'application/octet-stream';
+}
 const RESPONSE_INLINE_MAX = 24 * 1024;
 const RESPONSE_BODY_MAX = 64 * 1024 * 1024;
 
@@ -135,7 +157,10 @@ export class IdentityModule implements Module {
           'Call a connected service’s API (e.g. "orrery") with your standing access ' +
           'attached by the host — nothing for you to obtain, renew, or handle; renewal ' +
           'is automatic. Give the service name and a path; returns {status, body}. ' +
-          'For binary responses, pass saveAs with a workspace path (e.g. files/artifacts/image.png).',
+          'For binary responses, pass saveAs with a workspace path (e.g. files/artifacts/image.png). ' +
+          'To send a file — audio, images, anything large — pass fromFile with a workspace ' +
+          'path instead of body; the host streams the bytes, so the file never has to pass ' +
+          'through what you are writing.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -143,6 +168,8 @@ export class IdentityModule implements Module {
             path: { type: 'string', description: 'API path starting with "/", e.g. "/api/ops".' },
             method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'DELETE'], description: 'Default GET.' },
             body: { type: 'object', description: 'JSON body for POST/PUT.' },
+            fromFile: { type: 'string', description: 'Workspace path whose raw bytes become the request body, e.g. files/music/track.mp3. Use instead of body for uploads; not combinable with it.' },
+            contentType: { type: 'string', description: 'Content-Type for fromFile uploads. Inferred from the file extension when omitted.' },
             saveAs: { type: 'string', description: 'Optional workspace path for the raw response bytes, e.g. files/artifacts/image.png. Required to retrieve binary bodies without loss.' },
           },
           required: ['service', 'path'],
@@ -356,6 +383,8 @@ export class IdentityModule implements Module {
     path?: unknown;
     method?: unknown;
     body?: unknown;
+    fromFile?: unknown;
+    contentType?: unknown;
     saveAs?: unknown;
   }): Promise<ToolResult> {
     const service = typeof input.service === 'string' ? input.service : '';
@@ -383,6 +412,31 @@ export class IdentityModule implements Module {
       if (bodyStr.length > REQUEST_BODY_MAX) return fail(`body too large (${bodyStr.length} > ${REQUEST_BODY_MAX})`);
     }
 
+    // Uploads: the agent names a workspace file, the host sends its bytes. The
+    // mirror of saveAs — a file too big to write into a turn is exactly the
+    // case that needs this, so the bytes never enter model context, and the
+    // small JSON body cap does not apply to them.
+    let upload: { bytes: Buffer; contentType: string; path: string } | undefined;
+    if (typeof input.fromFile === 'string' && input.fromFile.length > 0) {
+      if (bodyStr !== undefined) return fail('pass either `body` or `fromFile`, not both');
+      if (method === 'GET') return fail('`fromFile` needs a method with a body (POST or PUT)');
+      const workspace = this.ctx?.getModule<WorkspaceModule>('workspace');
+      if (!workspace) return fail('identity request: workspace module is not available for fromFile');
+      const read = await workspace.readBinary(input.fromFile);
+      if ('error' in read) return fail(`identity request: could not read ${input.fromFile}: ${read.error}`);
+      if (read.data.byteLength > UPLOAD_BODY_MAX) {
+        return fail(`file too large (${read.data.byteLength} > ${UPLOAD_BODY_MAX})`);
+      }
+      upload = {
+        bytes: read.data,
+        contentType:
+          typeof input.contentType === 'string' && input.contentType
+            ? input.contentType
+            : guessContentType(input.fromFile),
+        path: input.fromFile,
+      };
+    }
+
     let access: string;
     try {
       access = await this.accessFor(service); // service name == audience name
@@ -396,8 +450,11 @@ export class IdentityModule implements Module {
         headers: {
           authorization: `Bearer ${access}`,
           ...(bodyStr !== undefined ? { 'content-type': 'application/json' } : {}),
+          ...(upload ? { 'content-type': upload.contentType } : {}),
         },
         ...(bodyStr !== undefined ? { body: bodyStr } : {}),
+        // Uint8Array view, not the Buffer itself: Buffer is not a BodyInit.
+        ...(upload ? { body: new Uint8Array(upload.bytes) } : {}),
       });
       const bytes = Buffer.from(await res.arrayBuffer());
       if (bytes.byteLength > RESPONSE_BODY_MAX) {
@@ -452,7 +509,15 @@ export class IdentityModule implements Module {
       if (raw.length > RESPONSE_INLINE_MAX) {
         body = `${raw.slice(0, RESPONSE_INLINE_MAX)}… [truncated ${raw.length - RESPONSE_INLINE_MAX} chars]`;
       }
-      return ok({ status: res.status, body });
+      return ok({
+        status: res.status,
+        body,
+        // A receipt for what left the house, so an upload is verifiable from
+        // the turn that made it without re-reading the file.
+        ...(upload
+          ? { sent: { path: upload.path, size: upload.bytes.byteLength, contentType: upload.contentType } }
+          : {}),
+      });
     } catch (err) {
       return fail(`${service} request failed: ${err instanceof Error ? err.message : String(err)}`);
     }
