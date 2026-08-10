@@ -56,6 +56,15 @@
 
 - **Hybrid prose routing.** Recipes may set `agent.proseRouting: "hybrid"`: unprefixed text keeps ordinary frozen-locus delivery, while a leading `>>>destination` publication envelope routes through Agent Framework’s existing authorized cross-surface resolver. Source text retains the envelope; recipients see only the body; success/failure returns to resident context.
 
+- **`conversations` recipe block — per-channel conversation forks.** Maps to
+  agent-framework's `ConversationRouter`: the recipe's agent becomes a dormant
+  trunk template, and qualifying incoming channel messages spawn per-channel
+  fork agents seeded from the trunk's current context. Recipe surface: `bind` /
+  `trigger` rules per channel kind (`dm`/`groupDm`/`channel`), `idleTtlMs`
+  (default 12h), `closurePrompt`, and `agentPrefix`. The host fills
+  `templateAgent` from the recipe and creates a fresh stateful strategy instance
+  for each fork. Absent block means no routing and no behavior change.
+
 - **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
 
 - **`BEDROCK_BASE_URL` env hook** for the bedrock provider — mirrors

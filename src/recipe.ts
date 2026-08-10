@@ -728,6 +728,41 @@ export interface RecipeCodeExecution {
   idleReclaimMs?: number;
 }
 
+/**
+ * Per-channel conversation routing (agent-framework ConversationRouter):
+ * the recipe's agent becomes a dormant "trunk" template, and qualifying
+ * incoming channel messages spawn per-channel fork agents seeded from the
+ * trunk's current context. The host fills in what the framework needs but a
+ * recipe can't say: `templateAgent` is always the recipe's own agent, and
+ * `strategyFactory` builds a fresh instance of the recipe's `agent.strategy`
+ * per fork (strategy instances are stateful and must never be shared).
+ */
+export interface RecipeConversations {
+  /** When an unbound channel acquires a fork.
+   * Defaults: dm 'always', groupDm 'always', channel 'mention'. */
+  bind?: {
+    dm?: 'always' | 'mention' | 'never';
+    groupDm?: 'always' | 'mention' | 'never';
+    channel?: 'always' | 'mention' | 'never';
+  };
+  /** When a message on a bound channel triggers inference (it always lands
+   * in the fork's context regardless).
+   * Defaults: dm 'always', groupDm 'mention', channel 'mention'. */
+  trigger?: {
+    dm?: 'always' | 'mention';
+    groupDm?: 'always' | 'mention';
+    channel?: 'always' | 'mention';
+  };
+  /** Idle time before a binding expires and the fork runs its closure turn.
+   * Default 12h. */
+  idleTtlMs?: number;
+  /** Final system-initiated user message sent to a fork on expiry. */
+  closurePrompt?: string;
+  /** Prefix for generated fork agent names (default 'conversation'). Also
+   * the Chronicle namespace segment, so it is restricted to [A-Za-z0-9_-]. */
+  agentPrefix?: string;
+}
+
 export interface Recipe {
   name: string;
   description?: string;
@@ -740,6 +775,8 @@ export interface Recipe {
   sessionNaming?: { examples?: string[] };
   /** Client-side programmatic tool calling (code_execution tool). */
   codeExecution?: RecipeCodeExecution;
+  /** Per-channel conversation routing — fork-per-channel from this agent. */
+  conversations?: RecipeConversations;
 }
 
 // ---------------------------------------------------------------------------
@@ -1463,6 +1500,51 @@ export function validateRecipe(raw: unknown): Recipe {
       if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
       }
+    }
+  }
+
+  if (obj.conversations !== undefined) {
+    if (!obj.conversations || typeof obj.conversations !== 'object' || Array.isArray(obj.conversations)) {
+      throw new Error('Recipe conversations must be an object.');
+    }
+    const conv = obj.conversations as Record<string, unknown>;
+    const kinds = ['dm', 'groupDm', 'channel'] as const;
+    for (const [field, allowed] of [
+      ['bind', ['always', 'mention', 'never']],
+      ['trigger', ['always', 'mention']],
+    ] as Array<[string, string[]]>) {
+      const rules = conv[field];
+      if (rules === undefined) continue;
+      if (!rules || typeof rules !== 'object' || Array.isArray(rules)) {
+        throw new Error(`Recipe conversations.${field} must be an object.`);
+      }
+      for (const [kind, rule] of Object.entries(rules as Record<string, unknown>)) {
+        if (!(kinds as readonly string[]).includes(kind)) {
+          throw new Error(
+            `Recipe conversations.${field} has unknown channel kind ${JSON.stringify(kind)} ` +
+            `(expected one of: ${kinds.join(', ')}).`,
+          );
+        }
+        if (typeof rule !== 'string' || !allowed.includes(rule)) {
+          throw new Error(
+            `Recipe conversations.${field}.${kind} must be one of ${allowed.map(r => `'${r}'`).join(', ')}, ` +
+            `got ${JSON.stringify(rule)}.`,
+          );
+        }
+      }
+    }
+    if (conv.idleTtlMs !== undefined && (typeof conv.idleTtlMs !== 'number' || conv.idleTtlMs <= 0)) {
+      throw new Error('Recipe conversations.idleTtlMs must be a positive number.');
+    }
+    if (conv.closurePrompt !== undefined && (typeof conv.closurePrompt !== 'string' || !conv.closurePrompt.trim())) {
+      throw new Error('Recipe conversations.closurePrompt must be a non-empty string.');
+    }
+    if (conv.agentPrefix !== undefined &&
+        (typeof conv.agentPrefix !== 'string' || !/^[A-Za-z0-9_-]+$/.test(conv.agentPrefix))) {
+      throw new Error(
+        'Recipe conversations.agentPrefix must be a non-empty string of [A-Za-z0-9_-] ' +
+        '(it names fork agents and their Chronicle namespaces).',
+      );
     }
   }
 
