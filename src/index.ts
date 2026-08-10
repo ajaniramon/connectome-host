@@ -65,7 +65,7 @@ import {
 } from './recipe.js';
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
-import { buildFrameworkStrategy } from './framework-strategy.js';
+import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
 import { loadExtensions } from './extensions.js';
 
 export type { AppContext };
@@ -490,6 +490,10 @@ async function createFramework(
   const strategy = buildFrameworkStrategy(recipe, model, timeZone, extensionRegistry);
   const agentConfig = buildFrameworkAgentConfig(recipe, agentName, model, strategy);
 
+  // Per-channel conversation routing: the recipe agent becomes the trunk
+  // template; forks get a fresh instance of the same recipe strategy.
+  const conversations = buildConversationsConfig(recipe, agentName, model, timeZone, extensionRegistry);
+
   // -- Create framework --
   const framework = await AgentFramework.create({
     storePath,
@@ -501,6 +505,7 @@ agents: [agentConfig],
     timeZone,
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
+    ...(conversations ? { conversations } : {}),
   });
 
   // Wire post-creation hooks

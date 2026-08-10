@@ -2,6 +2,7 @@ import {
   AutobiographicalStrategy,
   PassthroughStrategy,
   type ContextStrategy,
+  type ConversationRouterConfig,
 } from '@animalabs/agent-framework';
 import type { Recipe, RecipeStrategy } from './recipe.js';
 import { FrontdeskStrategy } from './strategies/frontdesk-strategy.js';
@@ -124,4 +125,33 @@ export function buildFrameworkStrategy(
     : strategyType === 'frontdesk'
       ? new FrontdeskStrategy(autobiographicalOpts)
       : new AutobiographicalStrategy(autobiographicalOpts);
+}
+
+/**
+ * Map a recipe's `conversations` block to the framework's
+ * ConversationRouterConfig. The host supplies the two fields a recipe
+ * cannot: `templateAgent` is the recipe's own (sole) agent, and
+ * `strategyFactory` builds a FRESH instance of the recipe's configured
+ * strategy per fork — strategy instances are stateful and must never be
+ * shared between ContextManagers (without a factory the framework would
+ * silently give forks passthrough, i.e. no compression).
+ */
+export function buildConversationsConfig(
+  recipe: Recipe,
+  agentName: string,
+  model: string,
+  timeZone: string,
+  extensions?: ExtensionRegistry,
+): ConversationRouterConfig | undefined {
+  const conv = recipe.conversations;
+  if (!conv) return undefined;
+  return {
+    templateAgent: agentName,
+    ...(conv.bind !== undefined ? { bind: conv.bind } : {}),
+    ...(conv.trigger !== undefined ? { trigger: conv.trigger } : {}),
+    ...(conv.idleTtlMs !== undefined ? { idleTtlMs: conv.idleTtlMs } : {}),
+    ...(conv.closurePrompt !== undefined ? { closurePrompt: conv.closurePrompt } : {}),
+    ...(conv.agentPrefix !== undefined ? { agentPrefix: conv.agentPrefix } : {}),
+    strategyFactory: () => buildFrameworkStrategy(recipe, model, timeZone, extensions),
+  };
 }

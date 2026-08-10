@@ -42,6 +42,19 @@
 
 ### Added
 
+- **`conversations` recipe block — per-channel conversation forks.** Maps to
+  agent-framework's `ConversationRouter` (af ≥0.9.0): the recipe's agent
+  becomes a dormant trunk template, and qualifying incoming channel messages
+  spawn per-channel fork agents seeded from the trunk's current context.
+  Recipe surface: `bind` / `trigger` rules per channel kind
+  (`dm`/`groupDm`/`channel`), `idleTtlMs` (default 12h), `closurePrompt`,
+  `agentPrefix` (restricted to `[A-Za-z0-9_-]` — it names fork agents and
+  their Chronicle namespaces). The host fills what a recipe can't say:
+  `templateAgent` is always the recipe's own agent, and each fork gets a
+  **fresh** instance of the recipe's `agent.strategy` (strategy instances
+  are stateful; sharing one across ContextManagers corrupts compression).
+  Absent block = no routing, zero behavior change.
+
 - **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
 
 - **`BEDROCK_BASE_URL` env hook** for the bedrock provider — mirrors
