@@ -16,6 +16,17 @@
 
 ### Changed
 
+- **Dependency floor: agent-framework `^0.9.0`, chronicle `^0.3.0`,
+  membrane `^0.5.78`.** af 0.9.0 brings `ConversationRouter` (the
+  per-channel conversation-fork machinery the upcoming `conversations`
+  recipe surface targets) and exports `nudgeAgent`, which `/nudge` has
+  called since it landed — on every published af before 0.9.0 that call
+  was a guaranteed `TypeError`, so the floor also makes `/nudge` actually
+  work. Chronicle `^0.3.0` aligns the whole tree on one chronicle copy
+  (previously context-manager `0.6.3` nested its own `0.3.0` next to the
+  host's `0.2.x`). Operators: run a clean `npm ci` — a stale
+  `node_modules` predating the lock is the known failure mode here.
+
 - **The public triumvirate recipes boot from a fresh clone.**
   `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
   an org-internal adapter that isn't publicly available — with `NOTION_*` env
