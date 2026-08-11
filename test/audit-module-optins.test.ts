@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   classifyModule,
@@ -74,15 +74,22 @@ describe('auditRecipe', () => {
   });
 
   test('collects local fleet children, resolves relative paths, skips URLs', () => {
+    const parentPath = resolve('/deploy/recipes/parent.json');
     const a = auditRecipe(
       {
         name: 'parent',
         agent: AGENT,
         modules: { fleet: { children: [{ recipe: 'child.json' }, { recipe: 'https://x.example/c.json' }] } },
       },
-      '/deploy/recipes/parent.json',
+      parentPath,
     );
-    expect(a.childRecipePaths).toEqual(['/deploy/recipes/child.json']);
+
+    // The https child is skipped; the relative one resolves beside the parent.
+    expect(a.childRecipePaths).toHaveLength(1);
+    const [childPath] = a.childRecipePaths;
+    expect(isAbsolute(childPath)).toBe(true);
+    expect(dirname(childPath)).toBe(dirname(parentPath));
+    expect(basename(childPath)).toBe('child.json');
   });
 });
 
