@@ -10,7 +10,7 @@
  *   bun src/index.ts --headless --exit-when-idle   # One-shot: exit when agents go idle after first inference
  *
  * Environment variables:
- *   ANTHROPIC_API_KEY   - Required
+ *   ANTHROPIC_API_KEY   - Required (not needed for recipe provider "mock")
  *   MODEL               - Override model (default: from recipe or claude-opus-4-6)
  *   DATA_DIR            - Data directory for sessions (default: ./data)
  */
@@ -19,6 +19,7 @@ import {
   AnthropicXmlFormatter,
   BedrockAdapter,
   Membrane,
+  MockAdapter,
   NativeFormatter,
   OpenAIResponsesAPIAdapter,
   OpenAIResponsesFormatter,
@@ -902,6 +903,21 @@ async function main() {
         llmLogPath,
       )
     : undefined;
+  // Mock: membrane's canned/echo adapter — the full host loop with zero
+  // provider spend and no credentials (none of the key checks above are
+  // gated on it). Echo is the default because it's the informative shape
+  // for interactive smoke runs; recipe agent.mock.echoMode=false switches
+  // to defaultResponse for deterministic scripted output. It rides the
+  // generic logging decorator so even mock calls leave llm-calls.jsonl
+  // receipts — the observability path is part of what a mock run exercises.
+  const mockAdapter = provider === 'mock'
+    ? new MockAdapter({
+        echoMode: recipe.agent.mock?.echoMode ?? true,
+        ...(recipe.agent.mock?.defaultResponse !== undefined
+          ? { defaultResponse: recipe.agent.mock.defaultResponse }
+          : {}),
+      })
+    : undefined;
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
         new OpenAIResponsesAPIAdapter({
@@ -916,6 +932,7 @@ async function main() {
     // `openrouterAdapter` instances stay un-wrapped for auth commands and
     // dispose() — only the membrane sees the wrapper.
     : bedrockAdapter
+      ?? (mockAdapter ? new LoggingProviderAdapter(mockAdapter, llmLogPath) : undefined)
       ?? (openrouterAdapter ? new LoggingProviderAdapter(openrouterAdapter, llmLogPath) : undefined)
       ?? (codexAdapter ? new LoggingProviderAdapter(codexAdapter, llmLogPath) : undefined)
       ?? new LoggingAnthropicAdapter(
