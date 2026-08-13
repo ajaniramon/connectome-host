@@ -111,8 +111,10 @@ export interface RecipeAgent {
   model?: string;
   /** IANA zone used when rendering wall-clock times to the agent. */
   timezone?: string;
-  /** Provider transport. Omitted preserves the historical Anthropic default. */
-  provider?: 'anthropic' | 'openai-responses' | 'openai-codex' | 'openrouter' | 'bedrock';
+  /** Provider transport. Omitted preserves the historical Anthropic default.
+   * 'mock' wires membrane's MockAdapter — canned/echo responses, no API key,
+   * no provider spend; for exercising the full host loop offline. */
+  provider?: 'anthropic' | 'openai-responses' | 'openai-codex' | 'openrouter' | 'bedrock' | 'mock';
   /** Message formatter. 'native' (default) = structured user/assistant turns.
    * 'anthropic-xml' = classic prefill format ("participant: text" runs, XML
    * tools) — for migrating prefill-era bots (chapterx borgs) with their exact
@@ -194,6 +196,15 @@ export interface RecipeAgent {
    * `provider: "openai-codex"`. Runtime `/fast` overrides fastMode. */
   codex?: {
     fastMode?: boolean;
+  };
+  /** Mock-provider settings. Only used with `provider: "mock"`. The default
+   * (no block) echoes the last user message back — the most informative shape
+   * for interactive smoke runs, since you can see your own words complete the
+   * loop. `echoMode: false` returns `defaultResponse` instead, which gives
+   * deterministic output for scripted tests. */
+  mock?: {
+    echoMode?: boolean;
+    defaultResponse?: string;
   };
   /**
    * Content-refusal handling. When `autoRewind` is on, a `stop_reason: refusal`
@@ -946,9 +957,10 @@ export function validateRecipe(raw: unknown): Recipe {
       agent.provider !== 'openai-responses' &&
       agent.provider !== 'openai-codex' &&
       agent.provider !== 'openrouter' &&
-      agent.provider !== 'bedrock') {
+      agent.provider !== 'bedrock' &&
+      agent.provider !== 'mock') {
     throw new Error(
-      `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', or 'bedrock', ` +
+      `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', 'bedrock', or 'mock', ` +
       `got ${JSON.stringify(agent.provider)}.`,
     );
   }
@@ -996,6 +1008,20 @@ export function validateRecipe(raw: unknown): Recipe {
     const codex = agent.codex as Record<string, unknown>;
     if (codex.fastMode !== undefined && typeof codex.fastMode !== 'boolean') {
       throw new Error('Recipe agent.codex.fastMode must be a boolean.');
+    }
+  }
+
+  if (agent.mock !== undefined) {
+    if (!agent.mock || typeof agent.mock !== 'object' || Array.isArray(agent.mock)) {
+      throw new Error('Recipe agent.mock must be an object.');
+    }
+    const mock = agent.mock as Record<string, unknown>;
+    if (mock.echoMode !== undefined && typeof mock.echoMode !== 'boolean') {
+      throw new Error('Recipe agent.mock.echoMode must be a boolean.');
+    }
+    if (mock.defaultResponse !== undefined &&
+        (typeof mock.defaultResponse !== 'string' || !mock.defaultResponse.trim())) {
+      throw new Error('Recipe agent.mock.defaultResponse must be a non-empty string.');
     }
   }
 
