@@ -14,6 +14,20 @@ describe('recipe provider validation', () => {
       .toBe('openai-codex');
   });
 
+  test('accepts the mock provider and its settings', () => {
+    expect(validateRecipe(recipe({ provider: 'mock' })).agent.provider).toBe('mock');
+    expect(validateRecipe(recipe({
+      provider: 'mock',
+      mock: { echoMode: false, defaultResponse: 'canned' },
+    })).agent.mock).toEqual({ echoMode: false, defaultResponse: 'canned' });
+  });
+
+  test('rejects malformed mock settings', () => {
+    expect(() => validateRecipe(recipe({ mock: 'echo' }))).toThrow(/agent.mock/);
+    expect(() => validateRecipe(recipe({ mock: { echoMode: 'yes' } }))).toThrow(/echoMode/);
+    expect(() => validateRecipe(recipe({ mock: { defaultResponse: '' } }))).toThrow(/defaultResponse/);
+  });
+
   test('accepts Codex subscription settings', () => {
     expect(validateRecipe(recipe({
       provider: 'openai-codex',

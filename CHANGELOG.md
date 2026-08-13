@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **`provider: "mock"` — run the whole host with zero provider spend and no
+  credentials.** Wires membrane's existing `MockAdapter` (previously
+  unreachable from any recipe) as a first-class provider: echoes the last
+  user message by default, or returns `agent.mock.defaultResponse` with
+  `agent.mock.echoMode: false` for deterministic scripted output. No API
+  key is required or read. Mock calls still ride the generic logging
+  decorator, so `llm-calls.*.jsonl` receipts work exactly as they do for
+  real providers. `recipes/mock-test.json` is a ready-made offline smoke
+  recipe (loopback webui, everything else off).
+
 ### Changed
 
 - **The public triumvirate recipes boot from a fresh clone.**
