@@ -155,9 +155,12 @@ export interface RecipeAgent {
   /**
    * Prose delivery mode (agent-framework docs/explicit-prose-routing.md).
    * 'explicit' = model prefixes plain text with `>>destination`; unprefixed
-   * prose bounces to a clipboard instead of auto-routing. Default 'locus'.
+   * prose bounces to a clipboard instead of auto-routing.
+   * 'hybrid' = unprefixed prose keeps the current locus while an exact leading
+   * `>>>destination` envelope routes through the authorized channel registry.
+   * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid';
   /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
    * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
@@ -963,6 +966,15 @@ export function validateRecipe(raw: unknown): Recipe {
       `Recipe agent.provider must be 'anthropic', 'openai-responses', 'openai-codex', 'openrouter', 'bedrock', or 'mock', ` +
       `got ${JSON.stringify(agent.provider)}.`,
     );
+  }
+
+  if (
+    agent.proseRouting !== undefined &&
+    agent.proseRouting !== 'locus' &&
+    agent.proseRouting !== 'explicit' &&
+    agent.proseRouting !== 'hybrid'
+  ) {
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', or 'hybrid', got ${JSON.stringify(agent.proseRouting)}.`);
   }
 
   if (agent.timezone !== undefined) {
