@@ -67,6 +67,12 @@
 
 - **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
 
+- **`mcpl_list` reports manifest freshness.** Each loaded server now shows the
+  last validated manifest revision plus fetch and grant-negotiation timestamps.
+  Older Agent Framework versions remain legible as `manifest=unknown`, and the
+  server-authored revision is quoted and bounded before reaching model-facing
+  text.
+
 - **`BEDROCK_BASE_URL` env hook** for the bedrock provider — mirrors
   `ANTHROPIC_BASE_URL`, routing bedrock-runtime calls through an inference
   gateway (gate.animalabs.ai/bedrock/<credSet>). The gate reads the agent
