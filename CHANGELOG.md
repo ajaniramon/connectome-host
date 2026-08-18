@@ -16,10 +16,10 @@
 
 ### Changed
 
-- **Dependency floor: agent-framework `^0.9.0`, chronicle `^0.3.0`,
-  membrane `^0.5.78`.** af 0.9.0 brings `ConversationRouter` (the
-  per-channel conversation-fork machinery the upcoming `conversations`
-  recipe surface targets) and exports `nudgeAgent`, which `/nudge` has
+- **Dependency floor: agent-framework `^0.10.0`, chronicle `^0.3.0`,
+  membrane `^0.5.78`.** af 0.10.0 brings `ConversationRouter` (the
+  per-channel conversation-fork machinery this release’s `conversations`
+  recipe surface targets, and includes the current `hybrid` prose router) and exports `nudgeAgent`, which `/nudge` has
   called since it landed — on every published af before 0.9.0 that call
   was a guaranteed `TypeError`, so the floor also makes `/nudge` actually
   work. Chronicle `^0.3.0` aligns the whole tree on one chronicle copy

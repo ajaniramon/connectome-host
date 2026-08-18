@@ -1508,6 +1508,15 @@ export function validateRecipe(raw: unknown): Recipe {
       throw new Error('Recipe conversations must be an object.');
     }
     const conv = obj.conversations as Record<string, unknown>;
+    const allowedConversationKeys = new Set(['bind', 'trigger', 'idleTtlMs', 'closurePrompt', 'agentPrefix']);
+    for (const key of Object.keys(conv)) {
+      if (!allowedConversationKeys.has(key)) {
+        throw new Error(
+          `Recipe conversations has unknown field ${JSON.stringify(key)} ` +
+          `(expected one of: ${[...allowedConversationKeys].join(', ')}).`,
+        );
+      }
+    }
     const kinds = ['dm', 'groupDm', 'channel'] as const;
     for (const [field, allowed] of [
       ['bind', ['always', 'mention', 'never']],
@@ -1533,8 +1542,10 @@ export function validateRecipe(raw: unknown): Recipe {
         }
       }
     }
-    if (conv.idleTtlMs !== undefined && (typeof conv.idleTtlMs !== 'number' || conv.idleTtlMs <= 0)) {
-      throw new Error('Recipe conversations.idleTtlMs must be a positive number.');
+    if (conv.idleTtlMs !== undefined &&
+        (typeof conv.idleTtlMs !== 'number' || !Number.isFinite(conv.idleTtlMs) ||
+         !Number.isInteger(conv.idleTtlMs) || conv.idleTtlMs <= 0)) {
+      throw new Error('Recipe conversations.idleTtlMs must be a positive finite integer.');
     }
     if (conv.closurePrompt !== undefined && (typeof conv.closurePrompt !== 'string' || !conv.closurePrompt.trim())) {
       throw new Error('Recipe conversations.closurePrompt must be a non-empty string.');

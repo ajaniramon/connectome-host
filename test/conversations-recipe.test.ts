@@ -43,6 +43,12 @@ describe('validateRecipe — conversations schema', () => {
     expect(() => validateRecipe(baseRecipe({ conversations: [] }))).toThrow(/must be an object/);
   });
 
+  test('unknown top-level conversation field is rejected rather than silently ignored', () => {
+    expect(() => validateRecipe(baseRecipe({
+      conversations: { idleTTLms: 1000 },
+    }))).toThrow(/unknown field \"idleTTLms\"/);
+  });
+
   test('unknown channel kind is rejected', () => {
     expect(() => validateRecipe(baseRecipe({
       conversations: { bind: { thread: 'always' } },
@@ -66,6 +72,10 @@ describe('validateRecipe — conversations schema', () => {
       .toThrow(/idleTtlMs/);
     expect(() => validateRecipe(baseRecipe({ conversations: { idleTtlMs: -5 } })))
       .toThrow(/idleTtlMs/);
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      expect(() => validateRecipe(baseRecipe({ conversations: { idleTtlMs: bad } })))
+        .toThrow(/idleTtlMs/);
+    }
   });
 
   test('blank closurePrompt is rejected', () => {
