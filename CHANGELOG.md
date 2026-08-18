@@ -16,6 +16,17 @@
 
 ### Changed
 
+- **Dependency floor: agent-framework `^0.10.0`, chronicle `^0.3.0`,
+  membrane `^0.5.78`.** af 0.10.0 brings `ConversationRouter` (the
+  per-channel conversation-fork machinery this release’s `conversations`
+  recipe surface targets, and includes the current `hybrid` prose router) and exports `nudgeAgent`, which `/nudge` has
+  called since it landed — on every published af before 0.9.0 that call
+  was a guaranteed `TypeError`, so the floor also makes `/nudge` actually
+  work. Chronicle `^0.3.0` aligns the whole tree on one chronicle copy
+  (previously context-manager `0.6.3` nested its own `0.3.0` next to the
+  host's `0.2.x`). Operators: run a clean `npm ci` — a stale
+  `node_modules` predating the lock is the known failure mode here.
+
 - **The public triumvirate recipes boot from a fresh clone.**
   `knowledge-miner.json` no longer ships a `syncntn` (Notion) block pointing at
   an org-internal adapter that isn't publicly available — with `NOTION_*` env
@@ -44,6 +55,15 @@
 ### Added
 
 - **Hybrid prose routing.** Recipes may set `agent.proseRouting: "hybrid"`: unprefixed text keeps ordinary frozen-locus delivery, while a leading `>>>destination` publication envelope routes through Agent Framework’s existing authorized cross-surface resolver. Source text retains the envelope; recipients see only the body; success/failure returns to resident context.
+
+- **`conversations` recipe block — per-channel conversation forks.** Maps to
+  agent-framework's `ConversationRouter`: the recipe's agent becomes a dormant
+  trunk template, and qualifying incoming channel messages spawn per-channel
+  fork agents seeded from the trunk's current context. Recipe surface: `bind` /
+  `trigger` rules per channel kind (`dm`/`groupDm`/`channel`), `idleTtlMs`
+  (default 12h), `closurePrompt`, and `agentPrefix`. The host fills
+  `templateAgent` from the recipe and creates a fresh stateful strategy instance
+  for each fork. Absent block means no routing and no behavior change.
 
 - **Standing autobiographical production target.** Recipes may set `agent.strategy.productionBudgetTokens` to keep the summary forest deep enough for a later live context-budget descent without a fold storm. This is a context-token target passed through to Context Manager, not a provider-spend ceiling; omission preserves Context Manager defaults.
 
