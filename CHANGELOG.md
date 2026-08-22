@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`agent.cacheKeepalive` — hold an idle agent's 1h prompt cache warm.** With
+  `cacheTtl: "1h"`, an idle agent's cached prefix expires after an hour and its
+  next wake pays a **2x cache write** over the entire context. Reading an entry
+  restarts its clock, so membrane now replays the last request with
+  `max_tokens: 0` (prefill only) to refresh it at cache-**read** price (0.1x).
+  On by default for the anthropic provider; `{ "enabled": false }` opts out.
+  - **Cost is proportional to actual idleness, not to `maxIdleHours`.** A poke
+    fires only when the entry is genuinely near expiry, so a busy agent never
+    fires one — its own traffic already refreshed the TTL. Measured on mythos
+    llm-calls over 36h: 563 of 637 gaps were under 5 minutes, only 5 exceeded
+    1h.
+  - Knobs: `maxIdleHours` (default 24, measured from the last **real** request
+    so pokes cannot extend their own mandate) and `refreshAfterMinutes`
+    (default 45). Recipe validation **rejects `refreshAfterMinutes >= the cache
+    TTL`** — such a keepalive always fires after the entry has already expired,
+    paying a full cache write on every poke while still looking like a healthy
+    successful call.
+  - Events land in `service-stderr.log`, warn-level for `ineffective` and
+    `disabled`, so a background spender is legible without opening a billing
+    dashboard.
+  - Sizing, from fable-cm's 11-day log (~500k-token prefix): 49.7M tokens of
+    `cache_creation` landed on turns following a >1h idle gap — ~$944 of write
+    premium at fable-5 rates that this converts to ~$308 of reads.
+
 - **`provider: "mock"` — run the whole host with zero provider spend and no
   credentials.** Wires membrane's existing `MockAdapter` (previously
   unreachable from any recipe) as a first-class provider: echoes the last

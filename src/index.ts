@@ -962,6 +962,30 @@ async function main() {
                   : {}),
               }),
           baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+          // Hold this agent's cached prefix warm across idle gaps. Only fires
+          // when the entry is actually near expiry, so a busy agent costs
+          // nothing; only the 1h-TTL primary lane is eligible (the module
+          // skips anything else). Off with cacheKeepalive.enabled: false.
+          cacheKeepalive: {
+            enabled: recipe.agent.cacheKeepalive?.enabled !== false,
+            ...(recipe.agent.cacheKeepalive?.maxIdleHours !== undefined
+              ? { maxIdleMs: recipe.agent.cacheKeepalive.maxIdleHours * 60 * 60_000 }
+              : {}),
+            ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
+              ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
+              : {}),
+            onEvent: (event: import('@animalabs/membrane').KeepaliveEvent) => {
+              // Surfaced in service-stderr.log. A background spender must be
+              // legible without reading the billing dashboard — and the
+              // 'ineffective'/'disabled' lines are the ones that matter.
+              const detail = JSON.stringify(event);
+              if (event.type === 'refreshed' || event.type === 'expired') {
+                console.log(`[cache-keepalive] ${detail}`);
+              } else {
+                console.warn(`[cache-keepalive] ${detail}`);
+              }
+            },
+          },
         },
         llmLogPath,
         () => settingsModule.getReasoning(),
