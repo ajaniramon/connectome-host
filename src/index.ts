@@ -67,6 +67,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
+import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions } from './extensions.js';
 
 export type { AppContext };
@@ -974,17 +975,11 @@ async function main() {
             ...(recipe.agent.cacheKeepalive?.refreshAfterMinutes !== undefined
               ? { refreshAfterMs: recipe.agent.cacheKeepalive.refreshAfterMinutes * 60_000 }
               : {}),
-            onEvent: (event: import('@animalabs/membrane').KeepaliveEvent) => {
-              // Surfaced in service-stderr.log. A background spender must be
-              // legible without reading the billing dashboard — and the
-              // 'ineffective'/'disabled' lines are the ones that matter.
-              const detail = JSON.stringify(event);
-              if (event.type === 'refreshed' || event.type === 'expired') {
-                console.log(`[cache-keepalive] ${detail}`);
-              } else {
-                console.warn(`[cache-keepalive] ${detail}`);
-              }
-            },
+            // Every event — routine refreshes included — goes to stderr, so
+            // all of them land in service-stderr.log next to
+            // [inference-refusal]. See cache-keepalive-log.ts for why this is
+            // not severity-routed.
+            onEvent: logKeepaliveEvent,
           },
         },
         llmLogPath,
