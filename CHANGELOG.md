@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Recipes accept `agent.proseRouting: "disabled"` for tool-only external publication when paired with a supporting Agent Framework release.
+
 ### Fixed
 
 - **Prompt-cache keepalive events all go to stderr**, so every one of them lands

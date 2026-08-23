@@ -182,7 +182,7 @@ export interface RecipeAgent {
    * `>>>destination` envelope routes through the authorized channel registry.
    * Default 'locus'.
    */
-  proseRouting?: 'locus' | 'explicit' | 'hybrid';
+  proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
   /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
    * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
@@ -1031,9 +1031,10 @@ export function validateRecipe(raw: unknown): Recipe {
     agent.proseRouting !== undefined &&
     agent.proseRouting !== 'locus' &&
     agent.proseRouting !== 'explicit' &&
-    agent.proseRouting !== 'hybrid'
+    agent.proseRouting !== 'hybrid' &&
+    agent.proseRouting !== 'disabled'
   ) {
-    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', or 'hybrid', got ${JSON.stringify(agent.proseRouting)}.`);
+    throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
   }
 
   if (agent.timezone !== undefined) {
