@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Prompt-cache keepalive events all go to stderr**, so every one of them lands
+  in `service-stderr.log` beside `[inference-refusal]` instead of being split by
+  severity across two sinks. Routine `refreshed` events previously went to
+  stdout — which the host unit leaves on the journal — so the log an operator
+  actually greps showed nothing. Observed on fable-cm 2026-08-23: the keepalive
+  refreshed a 523,102-token prefix three times, correctly and with zero cache
+  writes, while a monitor tailing `service-stderr.log` reported no activity for
+  three hours. A background spender that can't be found in the operator's log is
+  indistinguishable from one that never ran.
+
 ### Added
 
 - **`agent.cacheKeepalive` — hold an idle agent's 1h prompt cache warm.** With
