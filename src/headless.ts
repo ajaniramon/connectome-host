@@ -205,6 +205,16 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
         for (const line of result.lines) {
           emit({ type: 'command-output', text: line.text, style: line.style ?? null });
         }
+        // Commands with async follow-up (fleet kill/restart, puppet) put
+        // their real outcome in asyncWork; without this await the IPC
+        // caller only ever saw the "...starting" line and the result was
+        // silently dropped.
+        if (result.asyncWork) {
+          const followUp = await result.asyncWork;
+          for (const line of followUp.lines) {
+            emit({ type: 'command-output', text: line.text, style: line.style ?? null });
+          }
+        }
         if (result.switchToSessionId) {
           await app.switchSession(result.switchToSessionId);
           emit({ type: 'command-output', text: 'Session switched.', style: 'system' });
