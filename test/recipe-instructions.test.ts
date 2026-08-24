@@ -127,11 +127,14 @@ describe('recipe modules.instructions validation', () => {
       instructions: { path: 'input/AGENTS.md' },
       workspace: { mounts },
     }))).not.toThrow();
-    // configMount adds the implicit '_config' mount (host-materialized).
+    // The '_config' mount exists under configMount but is rejected for
+    // instructions: it does not auto-materialize (agent edits reach disk only
+    // after branch-changing commands), so the injection would serve stale
+    // content — the same split-brain the autoMaterialize check prevents.
     expect(() => validateRecipe(recipe({
       instructions: { path: '_config/AGENTS.md' },
       workspace: { mounts, configMount: true },
-    }))).not.toThrow();
+    }))).toThrow(/host-managed "_config"/);
   });
 
   test('rejects a read-write instructions mount without autoMaterialize (split-brain guard)', () => {

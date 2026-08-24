@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { buildWorkspaceMounts } from './workspace-mounts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1547,48 +1548,41 @@ export function validateRecipe(raw: unknown): Recipe {
             ? (mods.instructions as { path: string }).path
             : 'instructions/AGENTS.md'; // keep in sync with DEFAULT_INSTRUCTIONS_PATH
         const mountName = effectivePath.slice(0, effectivePath.indexOf('/'));
-        const ws = (mods.workspace && typeof mods.workspace === 'object'
-          ? mods.workspace
-          : {}) as {
-            mounts?: Array<{ name: string; mode?: string; autoMaterialize?: boolean }>;
-            configMount?: boolean;
-          };
-        // Mirror the host's mount construction: explicit mounts when
-        // declared, otherwise the implicit input (ro) + products (rw,
-        // no autoMaterialize) pair; _config when configMount is set.
-        const effectiveMounts: Array<{ name: string; mode: string; autoMaterialize: boolean }> =
-          ws.mounts
-            ? ws.mounts.map((m) => ({
-                name: m.name,
-                mode: m.mode ?? 'read-write',
-                autoMaterialize: m.autoMaterialize === true,
-              }))
-            : [
-                { name: 'input', mode: 'read-only', autoMaterialize: false },
-                { name: 'products', mode: 'read-write', autoMaterialize: false },
-              ];
-        if (ws.configMount) {
-          // Host-managed mount; materialization is handled by the framework.
-          effectiveMounts.push({ name: '_config', mode: 'read-write', autoMaterialize: true });
-        }
+        // Reason over the SAME mount construction the runtime uses — one
+        // builder, no validator-vs-host drift (the storePath placeholder is
+        // irrelevant here; only names/modes/flags are consulted).
+        const declaredExplicitly =
+          !!mods.workspace && typeof mods.workspace === 'object' &&
+          !!(mods.workspace as { mounts?: unknown }).mounts;
+        const effectiveMounts =
+          buildWorkspaceMounts(mods.workspace as RecipeModules['workspace'], '.') ?? [];
         const match = effectiveMounts.find((m) => m.name === mountName);
         if (!match) {
           throw new Error(
             `modules.instructions.path ${JSON.stringify(effectivePath)} names workspace mount ` +
-            `${JSON.stringify(mountName)}, but the ${ws.mounts ? 'declared' : 'implicit default'} ` +
+            `${JSON.stringify(mountName)}, but the ${declaredExplicitly ? 'declared' : 'implicit default'} ` +
             `mounts are: ${effectiveMounts.map((m) => JSON.stringify(m.name)).join(', ')}. ` +
             `(The default path "instructions/AGENTS.md" requires a workspace mount named ` +
             `"instructions" — declare one under modules.workspace.mounts.)`,
           );
         }
-        if (match.mode !== 'read-only' && !match.autoMaterialize) {
+        if (match.name === '_config') {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} reads through the ` +
+            `host-managed "_config" mount, which does NOT auto-materialize: agent edits stay ` +
+            `Chronicle-side and only reach disk after branch-changing commands, so the ` +
+            `instructions injection would silently serve stale content. Use a dedicated ` +
+            `instructions mount instead.`,
+          );
+        }
+        if (match.mode !== 'read-only' && match.autoMaterialize !== true) {
           throw new Error(
             `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write mount ` +
             `${JSON.stringify(mountName)} without autoMaterialize. Workspace writes are ` +
             `Chronicle-first and reach disk only when the mount materializes, while the ` +
             `instructions injection reads disk — agent edits to the file would silently never ` +
             `take effect. Set autoMaterialize: true on the mount` +
-            `${ws.mounts ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
+            `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
             `or make the mount read-only if the file is maintained outside the agent.`,
           );
         }

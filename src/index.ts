@@ -31,7 +31,7 @@ import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
 import { SettingsModule } from './modules/settings-module.js';
-import { AgentFramework, WorkspaceModule, resolveTimeZone, type Module, type MountConfig } from '@animalabs/agent-framework';
+import { AgentFramework, WorkspaceModule, resolveTimeZone, type Module } from '@animalabs/agent-framework';
 import { resolve, join, basename } from 'node:path';
 import { appendFile, mkdir, stat, rename } from 'node:fs/promises';
 import { readFileSync, existsSync } from 'node:fs';
@@ -39,7 +39,6 @@ import { SubagentModule } from './modules/subagent-module.js';
 import { LessonsModule } from './modules/lessons-module.js';
 import { RetrievalModule } from './modules/retrieval-module.js';
 import { buildRetrievalModuleConfig } from './retrieval-config.js';
-import type { RecipeWorkspaceMount } from './recipe.js';
 import { TuiModule } from './modules/tui-module.js';
 import { TimeModule } from './modules/time-module.js';
 import { FleetModule, type FleetModuleConfig } from './modules/fleet-module.js';
@@ -68,6 +67,7 @@ import {
 import { createBranchState, resetBranchState, handleExport, type BranchState } from './commands.js';
 import { buildFrameworkAgentConfig, membraneCachingOverride } from './framework-agent-config.js';
 import { buildFrameworkStrategy, buildConversationsConfig } from './framework-strategy.js';
+import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions } from './extensions.js';
 
@@ -263,46 +263,13 @@ async function createFramework(
   // Note: workspace: false disables ALL filesystem access (both read and write).
   // Previously LocalFilesModule was always-on; this is an intentional change —
   // recipes that need read-only access should keep workspace enabled (the default).
+  // Mount construction lives in workspace-mounts.ts so recipe validation
+  // reasons over the SAME mount flags the runtime builds (see that file's
+  // header for why).
   let workspaceModule: WorkspaceModule | null = null;
-  if (modules.workspace !== false) {
-    let mounts: MountConfig[];
-    if (typeof modules.workspace === 'object' && modules.workspace.mounts) {
-      // Only pass fields the recipe explicitly provides; let WorkspaceModule default the rest.
-      // We override watch to 'never' since FKM doesn't need chokidar filesystem watchers.
-      mounts = modules.workspace.mounts.map((m: RecipeWorkspaceMount) => {
-        const mount: MountConfig = {
-          name: m.name,
-          path: resolve(m.path),
-          mode: m.mode ?? 'read-write',
-          watch: m.watch ?? 'never', // FKM: no chokidar watchers by default
-        };
-        if (m.ignore) mount.ignore = m.ignore;
-        if (m.maxFileSize !== undefined) mount.maxFileSize = m.maxFileSize;
-        if (m.wakeOnChange !== undefined) mount.wakeOnChange = m.wakeOnChange;
-        if (m.autoMaterialize !== undefined) mount.autoMaterialize = m.autoMaterialize;
-        return mount;
-      });
-    } else {
-      // Default: read-only input mount + read-write products mount
-      mounts = [
-        { name: 'input', path: resolve('./input'), mode: 'read-only', watch: 'never' },
-        { name: 'products', path: resolve('./output'), mode: 'read-write', watch: 'never' },
-      ];
-    }
-
-    // Config mount: version-controls gate.json (and future config files) via Chronicle.
-    // Opt-in via recipe: workspace.configMount = true
-    const wantConfigMount = typeof modules.workspace === 'object' && modules.workspace.configMount;
-    if (wantConfigMount) {
-      mounts.push({
-        name: '_config',
-        path: resolve(join(storePath, 'config')),
-        mode: 'read-write',
-        watch: 'always',
-      });
-    }
-
-    workspaceModule = new WorkspaceModule({ mounts });
+  const workspaceMounts = buildWorkspaceMounts(modules.workspace, storePath);
+  if (workspaceMounts) {
+    workspaceModule = new WorkspaceModule({ mounts: workspaceMounts });
     moduleInstances.push(workspaceModule);
   }
 

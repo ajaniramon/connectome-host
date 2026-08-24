@@ -15,8 +15,11 @@
   `(realpath, mtime, size)`, and fail open — a missing file never blocks
   inference. Recipe validation cross-checks the path's mount prefix against
   the effective workspace mounts (explicit and implicit alike) at load time,
-  and requires `autoMaterialize: true` on a read-write instructions mount so
-  agent curation edits actually reach the disk-side injection.
+  requires `autoMaterialize: true` on a read-write instructions mount so
+  agent curation edits actually reach the disk-side injection, and rejects
+  the host-managed `_config` mount (it materializes only on branch-changing
+  commands). Validation and the runtime share one mount builder
+  (`src/workspace-mounts.ts`), so the two cannot drift.
 
 ### Fixed
 
