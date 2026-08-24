@@ -36,6 +36,10 @@ import { type FleetModule, formatChildRow } from './modules/fleet-module.js';
 /** Imported lazily to avoid circular deps — index.ts re-exports the type. */
 interface AppContext {
   framework: AgentFramework;
+  /** Resolved main-agent name (see index.ts resolveAgentName). Optional
+   *  because some callers (tui/webui refs) don't thread it; /puppet falls
+   *  back to the first registered agent, same as getAgentCM. */
+  agentName?: string;
   sessionManager: import('./session-manager.js').SessionManager;
   recipe: Recipe;
   branchState: BranchState;
@@ -149,6 +153,7 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
           { text: '  /undo                  Revert last agent turn', style: 'system' },
           { text: '  /redo                  Re-apply undone action', style: 'system' },
           { text: '  /nudge [agent]         Run inference on current context (no new events)', style: 'system' },
+          { text: '  /puppet <tool> [json]  Admin: execute a tool AS the agent, store the pair', style: 'system' },
           { text: '  /checkpoint <name>     Save current state', style: 'system' },
           { text: '  /restore <name>        Restore to checkpoint', style: 'system' },
           { text: '  /branches              List Chronicle branches', style: 'system' },
@@ -193,6 +198,9 @@ export function handleCommand(command: string, app: AppContext): CommandResult {
 
     case 'nudge':
       return handleNudge(app, args[0]);
+
+    case 'puppet':
+      return handlePuppet(app, args);
 
     case 'redo':
       return handleRedo(app);
@@ -662,6 +670,67 @@ export function handleExport(app: AppContext): CommandResult {
  * `nudgeAgent`). The zero-pollution complement to /undo: rewind, then nudge,
  * and the agent takes another swing at exactly what it already sees.
  */
+/**
+ * /puppet <toolName> [json-input] — admin: execute one tool AS the main
+ * agent and store the tool_use + tool_result pair in its window, exactly as
+ * a model-initiated call (Framework.puppetToolCall). The call runs for real.
+ * Refused unless the agent is idle and the tool is on its surface. Does not
+ * wake the agent. Born from the princess exemplar surgery (2026-08-23):
+ * one first-person pair restores a capacity the model can't find on its own
+ * — older models especially. Disclosure to the resident is the operator's
+ * call; the precedent was disclosed first.
+ */
+function handlePuppet(app: AppContext, args: string[]): CommandResult {
+  const toolName = args[0];
+  if (!toolName) {
+    return {
+      lines: [
+        { text: 'Usage: /puppet <toolName> [json-input]', style: 'system' },
+        { text: '  Executes the tool AS the agent (for real) and stores the', style: 'system' },
+        { text: '  tool_use + tool_result pair in its window. Requires idle.', style: 'system' },
+      ],
+    };
+  }
+  const rawInput = args.slice(1).join(' ').trim();
+  let input: Record<string, unknown> = {};
+  if (rawInput) {
+    try {
+      const parsed = JSON.parse(rawInput);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { lines: [{ text: 'puppet: input must be a JSON object', style: 'system' }] };
+      }
+      input = parsed;
+    } catch (e) {
+      return { lines: [{ text: `puppet: bad JSON input: ${e instanceof Error ? e.message : e}`, style: 'system' }] };
+    }
+  }
+  const agentName = app.agentName ?? app.framework.getAllAgents()[0]?.name;
+  if (!agentName) {
+    return { lines: [{ text: 'puppet: no registered agent', style: 'system' }] };
+  }
+  const asyncWork = (async (): Promise<CommandResult> => {
+    try {
+      const { toolUseId, result } = await app.framework.puppetToolCall(agentName, toolName, input);
+      const preview = result.isError
+        ? `ERROR: ${result.error ?? 'unknown'}`
+        : String(typeof result.data === 'string' ? result.data : JSON.stringify(result.data) ?? '').slice(0, 300);
+      return {
+        lines: [
+          { text: `puppet ${agentName}: ${toolName} → ${result.isError ? 'error' : 'ok'} (${toolUseId})`, style: 'system' },
+          { text: `  stored tool_use + tool_result in ${agentName}'s window (no wake).`, style: 'system' },
+          { text: `  result: ${preview.replace(/\n/g, ' ')}`, style: 'system' },
+        ],
+      };
+    } catch (e) {
+      return { lines: [{ text: `puppet failed: ${e instanceof Error ? e.message : e}`, style: 'system' }] };
+    }
+  })();
+  return {
+    lines: [{ text: `puppet: executing ${toolName} as ${agentName}...`, style: 'system' }],
+    asyncWork,
+  };
+}
+
 function handleNudge(app: AppContext, agentName?: string): CommandResult {
   const r = app.framework.nudgeAgent(agentName, 'host-console');
   if (!r.ok) {
