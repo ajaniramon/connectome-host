@@ -501,8 +501,13 @@ export interface RecipeModules {
    * Chronicle), so edits to the file take effect on the next turn.
    *
    * Requires `workspace` (the path below is a workspace mount path);
-   * enabling this alongside `workspace: false` fails validation. Missing
-   * mount or file is fail-open at runtime: no injection, warn once.
+   * enabling this alongside `workspace: false` fails validation. Note the
+   * default path expects a workspace mount named "instructions" — the
+   * implicit default workspace (mounts "input" + "products") has no such
+   * mount, so pair `instructions: true` with an explicit mount. When mounts
+   * are declared explicitly, the mount named by the path is cross-checked
+   * at load time; otherwise a missing mount or file is fail-open at
+   * runtime: no injection, warn once.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -1503,6 +1508,32 @@ export function validateRecipe(raw: unknown): Recipe {
           throw new Error(
             `modules.instructions.position must be 'system', 'beforeUser', or 'afterUser', ` +
             `got ${JSON.stringify(ins.position)}.`,
+          );
+        }
+      }
+
+      // When workspace mounts are declared explicitly, the mount the
+      // instructions path names is knowable at load time — cross-check it
+      // so a typo (or the default "instructions/…" path with no matching
+      // mount) fails here instead of as a silent no-injection at runtime.
+      // The implicit default workspace (`workspace` omitted or true) stays
+      // runtime-fail-open per the module contract.
+      if (mods.workspace && typeof mods.workspace === 'object') {
+        const ws = mods.workspace as { mounts: Array<{ name: string }>; configMount?: boolean };
+        const effectivePath =
+          typeof mods.instructions === 'object'
+              && typeof (mods.instructions as { path?: unknown }).path === 'string'
+            ? (mods.instructions as { path: string }).path
+            : 'instructions/AGENTS.md'; // keep in sync with DEFAULT_INSTRUCTIONS_PATH
+        const mountName = effectivePath.slice(0, effectivePath.indexOf('/'));
+        const mountNames = ws.mounts.map((m) => m.name);
+        if (ws.configMount) mountNames.push('_config');
+        if (!mountNames.includes(mountName)) {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} names workspace mount ` +
+            `${JSON.stringify(mountName)}, but the declared mounts are: ` +
+            `${mountNames.map((n) => JSON.stringify(n)).join(', ')}. ` +
+            `(The default path "instructions/AGENTS.md" requires a mount named "instructions".)`,
           );
         }
       }

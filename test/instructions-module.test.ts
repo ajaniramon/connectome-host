@@ -31,7 +31,7 @@ describe('InstructionsModule', () => {
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'instructions-module-'));
-    warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    warnSpy = spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -159,6 +159,18 @@ describe('InstructionsModule', () => {
     const injections = await mod.gatherContext('a');
     const text = (injections[0].content[0] as { text: string }).text;
     expect(text).toBe(`${DEFAULT_INSTRUCTIONS_HEADER}\n\n${'a'.repeat(10)}\n\n[truncated at 10 bytes]`);
+  });
+
+  test('truncation never splits a multibyte character (no U+FFFD)', async () => {
+    // '€' is 3 bytes in UTF-8; maxBytes: 4 cuts mid-character in the second
+    // '€'. The cut must back up to the sequence boundary (1 full '€').
+    writeFileSync(join(dir, 'AGENTS.md'), '€€€€');
+    const mod = new InstructionsModule({ maxBytes: 4 });
+    mod.setWorkspace(makeResolver('instructions', dir));
+
+    const text = ((await mod.gatherContext('a'))[0].content[0] as { text: string }).text;
+    expect(text).toBe(`${DEFAULT_INSTRUCTIONS_HEADER}\n\n€\n\n[truncated at 4 bytes]`);
+    expect(text).not.toContain('�');
   });
 
   test('does not truncate a file exactly at maxBytes', async () => {

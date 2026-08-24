@@ -128,7 +128,7 @@ subscription credits at a higher rate when applied.
 - **Session management**: Isolated sessions with auto-naming
 - **MCPL support**: Connect any MCP/MCPL server; wake subscriptions for selective event triggering
 - **File products**: Write reports and documents, materialize to disk
-- **Shared instructions** (opt-in, `modules.instructions`): a living instructions document (CLAUDE.md analogue) kept in a workspace mount and injected into every agent's context on every turn — the resident agent and all ephemeral subagents. Edits take effect on the next turn; nothing is persisted to history. Defaults: path `instructions/AGENTS.md`, `position: "system"`, 32 KiB cap; missing mount/file is fail-open (no injection, warn once). Requires `modules.workspace`
+- **Shared instructions** (opt-in, `modules.instructions`): a living instructions document (CLAUDE.md analogue) kept in a workspace mount and injected into every agent's context on every turn — the resident agent and all ephemeral subagents. Edits take effect on the next turn; nothing is persisted to history. Defaults: path `instructions/AGENTS.md`, `position: "system"`, 32 KiB cap; missing mount/file is fail-open (no injection, warn once). Requires `modules.workspace` — and note the default path expects a workspace mount named `instructions`, which the implicit default workspace (`input` + `products`) does not have, so declare one explicitly (explicitly declared mounts are cross-checked against the path at recipe load)
 
 For `openai-responses` and `openai-codex`, an object-valued
 `modules.retrieval` can set `reasoningEffort` (`none`, `minimal`, `low`,

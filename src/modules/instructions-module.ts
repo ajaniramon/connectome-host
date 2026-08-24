@@ -146,8 +146,18 @@ export class InstructionsModule implements Module {
       const buf = await fs.readFile(absPath);
       let content: string;
       if (buf.byteLength > this.maxBytes) {
+        // Back the cut up to a UTF-8 sequence boundary so a multibyte
+        // character split at maxBytes never decodes to U+FFFD right before
+        // the marker. If the byte AT the cut is a continuation byte
+        // (0b10xxxxxx), the sequence it belongs to straddles the cut: drop
+        // its continuation bytes, then its lead byte.
+        let cut = this.maxBytes;
+        if ((buf[cut]! & 0xc0) === 0x80) {
+          while (cut > 0 && (buf[cut - 1]! & 0xc0) === 0x80) cut--;
+          if (cut > 0) cut--;
+        }
         content =
-          buf.subarray(0, this.maxBytes).toString('utf-8') +
+          buf.subarray(0, cut).toString('utf-8') +
           `\n\n[truncated at ${this.maxBytes} bytes]`;
       } else {
         content = buf.toString('utf-8');
@@ -175,6 +185,6 @@ export class InstructionsModule implements Module {
   private warnOnce(message: string): void {
     if (this.warned.has(message)) return;
     this.warned.add(message);
-    console.warn(`InstructionsModule: ${message}`);
+    console.error(`InstructionsModule: ${message}`);
   }
 }

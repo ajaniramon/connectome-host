@@ -95,6 +95,31 @@ describe('recipe modules.instructions validation', () => {
     }))).not.toThrow();
   });
 
+  test('cross-checks the path mount against explicitly declared workspace mounts', () => {
+    const mounts = [
+      { name: 'input', path: './input', mode: 'read-only' },
+      { name: 'products', path: './output', mode: 'read-write' },
+    ];
+    // Default path 'instructions/AGENTS.md' names a mount that isn't declared.
+    expect(() => validateRecipe(recipe({ instructions: true, workspace: { mounts } })))
+      .toThrow(/requires a mount named "instructions"/);
+    // Same for an explicit path with a typo'd mount name.
+    expect(() => validateRecipe(recipe({
+      instructions: { path: 'shared/AGENTS.md' },
+      workspace: { mounts },
+    }))).toThrow(/names workspace mount "shared"/);
+    // A path naming a declared mount passes.
+    expect(() => validateRecipe(recipe({
+      instructions: { path: 'products/AGENTS.md' },
+      workspace: { mounts },
+    }))).not.toThrow();
+    // configMount adds the implicit '_config' mount.
+    expect(() => validateRecipe(recipe({
+      instructions: { path: '_config/AGENTS.md' },
+      workspace: { mounts, configMount: true },
+    }))).not.toThrow();
+  });
+
   test('allows instructions: false alongside workspace: false', () => {
     expect(() => validateRecipe(recipe({ instructions: false, workspace: false }))).not.toThrow();
   });
