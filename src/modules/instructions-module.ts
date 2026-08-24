@@ -18,9 +18,23 @@
  * workspace path ("<mountName>/<relativePath>") resolved through
  * WorkspaceModule.resolveAbsolutePath, so mount scoping and the
  * path-traversal guard apply. validateRecipe enforces the pairing.
+ *
+ * Symlink policy: resolveAbsolutePath's traversal guard is lexical, and a
+ * symlink inside the mount pointing outside it would otherwise smuggle
+ * arbitrary host-readable files into the trusted instructions block. Before
+ * reading, both the mount root and the resolved file are realpath'd and the
+ * file must remain inside the root — the same guard WorkspaceModule applies
+ * to its own image reads. (The right long-term home for this is a safe-read
+ * API on WorkspaceModule itself; agent-framework is a separately released
+ * package, so this module enforces the policy locally until one exists.)
+ *
+ * Reads are bounded: at most maxBytes is ever loaded (the file is read
+ * through a handle, not readFile), so an oversized or growing mounted file
+ * cannot balloon memory past the configured cap.
  */
 
 import { promises as fs } from 'node:fs';
+import { sep } from 'node:path';
 import type {
   Module,
   ModuleContext,
@@ -73,8 +87,15 @@ export class InstructionsModule implements Module {
 
   private workspace: WorkspacePathResolver | null = null;
 
-  /** Cache keyed by (mtimeMs, size) — reread only when the file changes. */
-  private cached: { mtimeMs: number; size: number; injections: ContextInjection[] } | null = null;
+  /** Cache keyed by (realpath, mtimeMs, size) — reread only when the file
+   *  changes. The realpath in the key covers a symlink retargeted between
+   *  turns to a different in-mount file with identical stat numbers. */
+  private cached: {
+    realFile: string;
+    mtimeMs: number;
+    size: number;
+    injections: ContextInjection[];
+  } | null = null;
 
   /** Error messages already warned about — fail-open must not spam per turn. */
   private warned = new Set<string>();
@@ -95,6 +116,7 @@ export class InstructionsModule implements Module {
 
   async stop(): Promise<void> {
     this.cached = null;
+    this.warned.clear();
   }
 
   getTools(): ToolDefinition[] {
@@ -132,48 +154,101 @@ export class InstructionsModule implements Module {
       );
       return [];
     }
+    // Mount root, via the same resolver (a bare mount name resolves to the
+    // root). Needed for the realpath containment check below.
+    const mountName = this.path.slice(0, this.path.indexOf('/'));
+    const mountRoot = this.workspace.resolveAbsolutePath(mountName);
+    if (!mountRoot) {
+      this.warnOnce(
+        `cannot resolve mount "${mountName}" root; no instructions injected`,
+      );
+      return [];
+    }
 
     try {
-      const stat = await fs.stat(absPath);
-      if (
-        this.cached &&
-        this.cached.mtimeMs === stat.mtimeMs &&
-        this.cached.size === stat.size
-      ) {
-        return this.cached.injections;
+      // Symlink guard: resolveAbsolutePath's containment is lexical only, so
+      // realpath both ends and require the real file to still live under the
+      // real mount root. Runs before the cache consult — a symlink swapped
+      // since last turn must never serve (or seed) cached content.
+      const realRoot = await fs.realpath(mountRoot);
+      const realFile = await fs.realpath(absPath);
+      if (realFile !== realRoot && !realFile.startsWith(realRoot + sep)) {
+        this.cached = null;
+        this.warnOnce(
+          `"${this.path}" resolves outside its mount after following symlinks; no instructions injected`,
+        );
+        return [];
       }
 
-      const buf = await fs.readFile(absPath);
-      let content: string;
-      if (buf.byteLength > this.maxBytes) {
-        // Back the cut up to a UTF-8 sequence boundary so a multibyte
-        // character split at maxBytes never decodes to U+FFFD right before
-        // the marker. If the byte AT the cut is a continuation byte
-        // (0b10xxxxxx), the sequence it belongs to straddles the cut: drop
-        // its continuation bytes, then its lead byte.
-        let cut = this.maxBytes;
-        if ((buf[cut]! & 0xc0) === 0x80) {
-          while (cut > 0 && (buf[cut - 1]! & 0xc0) === 0x80) cut--;
-          if (cut > 0) cut--;
+      // Handle-based read: stat and read against one open descriptor (no
+      // stat-then-read race), loading at most maxBytes regardless of file
+      // size — readFile would buffer the whole file first.
+      const handle = await fs.open(realFile, 'r');
+      try {
+        const stat = await handle.stat();
+        if (
+          this.cached &&
+          this.cached.realFile === realFile &&
+          this.cached.mtimeMs === stat.mtimeMs &&
+          this.cached.size === stat.size
+        ) {
+          return this.cached.injections;
         }
-        content =
-          buf.subarray(0, cut).toString('utf-8') +
-          `\n\n[truncated at ${this.maxBytes} bytes]`;
-      } else {
-        content = buf.toString('utf-8');
-      }
 
-      const injections: ContextInjection[] = [
-        {
-          namespace: 'instructions',
-          position: this.position,
-          content: [{ type: 'text', text: `${this.header}\n\n${content}` }],
-        },
-      ];
-      this.cached = { mtimeMs: stat.mtimeMs, size: stat.size, injections };
-      // Recovered — let a future recurrence of a previous error warn again.
-      this.warned.clear();
-      return injections;
+        const readLen = Math.min(stat.size, this.maxBytes);
+        const buf = Buffer.alloc(readLen);
+        let filled = 0;
+        while (filled < readLen) {
+          const { bytesRead } = await handle.read(buf, filled, readLen - filled, filled);
+          if (bytesRead === 0) break; // file shrank mid-read; keep what we have
+          filled += bytesRead;
+        }
+
+        let content: string;
+        if (stat.size > this.maxBytes) {
+          // Back the cut up to a UTF-8 sequence boundary so a multibyte
+          // character split at the cap never decodes to U+FFFD right before
+          // the marker. The bytes past the cap were never read, so detect a
+          // straddle from the kept tail alone: find the last lead byte and
+          // drop the sequence iff it declares more bytes than were kept.
+          let cut = filled;
+          let lead = filled - 1;
+          let trailing = 0;
+          while (lead >= 0 && (buf[lead]! & 0xc0) === 0x80) {
+            lead--;
+            trailing++;
+          }
+          if (lead >= 0) {
+            const b = buf[lead]!;
+            const expected =
+              (b & 0x80) === 0 ? 1
+              : (b & 0xe0) === 0xc0 ? 2
+              : (b & 0xf0) === 0xe0 ? 3
+              : (b & 0xf8) === 0xf0 ? 4
+              : 1; // invalid lead — leave it; decoding was lossy anyway
+            if (expected > trailing + 1) cut = lead;
+          }
+          content =
+            buf.subarray(0, cut).toString('utf-8') +
+            `\n\n[truncated: first ${cut} of ${stat.size} bytes]`;
+        } else {
+          content = buf.subarray(0, filled).toString('utf-8');
+        }
+
+        const injections: ContextInjection[] = [
+          {
+            namespace: 'instructions',
+            position: this.position,
+            content: [{ type: 'text', text: `${this.header}\n\n${content}` }],
+          },
+        ];
+        this.cached = { realFile, mtimeMs: stat.mtimeMs, size: stat.size, injections };
+        // Recovered — let a future recurrence of a previous error warn again.
+        this.warned.clear();
+        return injections;
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       // Fail open: missing file or any read error never blocks inference.
       this.cached = null;

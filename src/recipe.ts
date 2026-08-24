@@ -501,13 +501,24 @@ export interface RecipeModules {
    * Chronicle), so edits to the file take effect on the next turn.
    *
    * Requires `workspace` (the path below is a workspace mount path);
-   * enabling this alongside `workspace: false` fails validation. Note the
-   * default path expects a workspace mount named "instructions" — the
-   * implicit default workspace (mounts "input" + "products") has no such
-   * mount, so pair `instructions: true` with an explicit mount. When mounts
-   * are declared explicitly, the mount named by the path is cross-checked
-   * at load time; otherwise a missing mount or file is fail-open at
-   * runtime: no injection, warn once.
+   * enabling this alongside `workspace: false` fails validation. The mount
+   * named by the path is cross-checked at load time in every configuration
+   * (explicit mounts and the implicit "input"+"products" default alike), so
+   * a path naming a nonexistent mount is a load error, never a silent
+   * no-injection. A read-write instructions mount must also set
+   * `autoMaterialize: true`: workspace writes are Chronicle-first and the
+   * injection reads disk, so without materialization an agent's own
+   * curation edits would never reach the injection. A read-only mount is
+   * the alternative when the file is maintained outside the agent (edits
+   * then propagate to the injection but not to `workspace--read`, which
+   * serves Chronicle). A missing FILE remains fail-open at runtime: no
+   * injection, warn once.
+   *
+   * Cache economics: with position 'system' the injected block sits in the
+   * prompt-cache prefix of every agent, so each EDIT to the file is a
+   * fleet-wide cache cold start on the next turn (steady state between
+   * edits caches normally). Curate in batches rather than per-message;
+   * 'afterUser' is the cache-cheap, lower-salience alternative.
    */
   instructions?: boolean | {
     /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
@@ -519,7 +530,9 @@ export interface RecipeModules {
     header?: string;
     /**
      * Truncate content beyond this many bytes, appending a
-     * "[truncated at N bytes]" marker. Default 32768.
+     * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
+     * under the cap when a multibyte character straddles it). At most this
+     * many bytes are ever read from disk. Default 32768.
      */
     maxBytes?: number;
     /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
@@ -1512,28 +1525,71 @@ export function validateRecipe(raw: unknown): Recipe {
         }
       }
 
-      // When workspace mounts are declared explicitly, the mount the
-      // instructions path names is knowable at load time — cross-check it
-      // so a typo (or the default "instructions/…" path with no matching
-      // mount) fails here instead of as a silent no-injection at runtime.
-      // The implicit default workspace (`workspace` omitted or true) stays
-      // runtime-fail-open per the module contract.
-      if (mods.workspace && typeof mods.workspace === 'object') {
-        const ws = mods.workspace as { mounts: Array<{ name: string }>; configMount?: boolean };
+      // The mount the instructions path names is knowable at load time in
+      // EVERY configuration — explicit mounts from the declaration, the
+      // implicit default workspace from the fixed input/products pair the
+      // host builds — so a typo, the default "instructions/…" path with no
+      // matching mount, or `instructions: true` on the implicit workspace
+      // (whose mount set can never contain "instructions") all fail here
+      // instead of as a silent no-injection at runtime.
+      //
+      // A read-write instructions mount additionally requires
+      // autoMaterialize: workspace write/edit are Chronicle-first and reach
+      // disk only when the mount materializes, while this module reads disk
+      // — without it, an agent's own curation edits would never appear in
+      // the injection (and its workspace read would show the new content,
+      // hiding the drift entirely). Read-only mounts are exempt: disk is
+      // their only write path.
+      {
         const effectivePath =
           typeof mods.instructions === 'object'
               && typeof (mods.instructions as { path?: unknown }).path === 'string'
             ? (mods.instructions as { path: string }).path
             : 'instructions/AGENTS.md'; // keep in sync with DEFAULT_INSTRUCTIONS_PATH
         const mountName = effectivePath.slice(0, effectivePath.indexOf('/'));
-        const mountNames = ws.mounts.map((m) => m.name);
-        if (ws.configMount) mountNames.push('_config');
-        if (!mountNames.includes(mountName)) {
+        const ws = (mods.workspace && typeof mods.workspace === 'object'
+          ? mods.workspace
+          : {}) as {
+            mounts?: Array<{ name: string; mode?: string; autoMaterialize?: boolean }>;
+            configMount?: boolean;
+          };
+        // Mirror the host's mount construction: explicit mounts when
+        // declared, otherwise the implicit input (ro) + products (rw,
+        // no autoMaterialize) pair; _config when configMount is set.
+        const effectiveMounts: Array<{ name: string; mode: string; autoMaterialize: boolean }> =
+          ws.mounts
+            ? ws.mounts.map((m) => ({
+                name: m.name,
+                mode: m.mode ?? 'read-write',
+                autoMaterialize: m.autoMaterialize === true,
+              }))
+            : [
+                { name: 'input', mode: 'read-only', autoMaterialize: false },
+                { name: 'products', mode: 'read-write', autoMaterialize: false },
+              ];
+        if (ws.configMount) {
+          // Host-managed mount; materialization is handled by the framework.
+          effectiveMounts.push({ name: '_config', mode: 'read-write', autoMaterialize: true });
+        }
+        const match = effectiveMounts.find((m) => m.name === mountName);
+        if (!match) {
           throw new Error(
             `modules.instructions.path ${JSON.stringify(effectivePath)} names workspace mount ` +
-            `${JSON.stringify(mountName)}, but the declared mounts are: ` +
-            `${mountNames.map((n) => JSON.stringify(n)).join(', ')}. ` +
-            `(The default path "instructions/AGENTS.md" requires a mount named "instructions".)`,
+            `${JSON.stringify(mountName)}, but the ${ws.mounts ? 'declared' : 'implicit default'} ` +
+            `mounts are: ${effectiveMounts.map((m) => JSON.stringify(m.name)).join(', ')}. ` +
+            `(The default path "instructions/AGENTS.md" requires a workspace mount named ` +
+            `"instructions" — declare one under modules.workspace.mounts.)`,
+          );
+        }
+        if (match.mode !== 'read-only' && !match.autoMaterialize) {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write mount ` +
+            `${JSON.stringify(mountName)} without autoMaterialize. Workspace writes are ` +
+            `Chronicle-first and reach disk only when the mount materializes, while the ` +
+            `instructions injection reads disk — agent edits to the file would silently never ` +
+            `take effect. Set autoMaterialize: true on the mount` +
+            `${ws.mounts ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
+            `or make the mount read-only if the file is maintained outside the agent.`,
           );
         }
       }

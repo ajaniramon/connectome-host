@@ -9,18 +9,31 @@ function recipe(modules?: Record<string, unknown>) {
   };
 }
 
+/** A workspace declaration that satisfies the instructions cross-check for
+ *  the given mount name: read-write + autoMaterialize (the validated shape
+ *  for a mount agents curate). */
+function wsFor(mountName: string) {
+  return {
+    mounts: [
+      { name: mountName, path: `./${mountName}`, mode: 'read-write', autoMaterialize: true },
+    ],
+  };
+}
+
 describe('recipe modules.instructions validation', () => {
   test('allows the field to be omitted', () => {
     expect(validateRecipe(recipe()).modules?.instructions).toBeUndefined();
   });
 
   test('accepts boolean shorthand', () => {
-    expect(validateRecipe(recipe({ instructions: true })).modules?.instructions).toBe(true);
+    expect(validateRecipe(recipe({ instructions: true, workspace: wsFor('instructions') }))
+      .modules?.instructions).toBe(true);
     expect(validateRecipe(recipe({ instructions: false })).modules?.instructions).toBe(false);
   });
 
   test('accepts a full object config', () => {
     const parsed = validateRecipe(recipe({
+      workspace: wsFor('shared'),
       instructions: {
         path: 'shared/HOUSE-RULES.md',
         header: '## House rules',
@@ -37,7 +50,8 @@ describe('recipe modules.instructions validation', () => {
   });
 
   test('accepts an empty object (all defaults)', () => {
-    expect(validateRecipe(recipe({ instructions: {} })).modules?.instructions).toEqual({});
+    expect(validateRecipe(recipe({ instructions: {}, workspace: wsFor('instructions') }))
+      .modules?.instructions).toEqual({});
   });
 
   test('rejects non-boolean, non-object values', () => {
@@ -87,11 +101,10 @@ describe('recipe modules.instructions validation', () => {
       .toThrow(/requires modules\.workspace/);
   });
 
-  test('allows instructions with default (omitted) workspace and explicit workspace', () => {
-    expect(() => validateRecipe(recipe({ instructions: true }))).not.toThrow();
+  test('accepts a properly declared instructions mount (rw + autoMaterialize)', () => {
     expect(() => validateRecipe(recipe({
       instructions: true,
-      workspace: { mounts: [{ name: 'instructions', path: './instructions', mode: 'read-write' }] },
+      workspace: wsFor('instructions'),
     }))).not.toThrow();
   });
 
@@ -102,22 +115,56 @@ describe('recipe modules.instructions validation', () => {
     ];
     // Default path 'instructions/AGENTS.md' names a mount that isn't declared.
     expect(() => validateRecipe(recipe({ instructions: true, workspace: { mounts } })))
-      .toThrow(/requires a mount named "instructions"/);
+      .toThrow(/requires a workspace mount named\s+"instructions"/);
     // Same for an explicit path with a typo'd mount name.
     expect(() => validateRecipe(recipe({
       instructions: { path: 'shared/AGENTS.md' },
       workspace: { mounts },
     }))).toThrow(/names workspace mount "shared"/);
-    // A path naming a declared mount passes.
+    // A read-only declared mount passes without autoMaterialize (disk is its
+    // only write path).
     expect(() => validateRecipe(recipe({
-      instructions: { path: 'products/AGENTS.md' },
+      instructions: { path: 'input/AGENTS.md' },
       workspace: { mounts },
     }))).not.toThrow();
-    // configMount adds the implicit '_config' mount.
+    // configMount adds the implicit '_config' mount (host-materialized).
     expect(() => validateRecipe(recipe({
       instructions: { path: '_config/AGENTS.md' },
       workspace: { mounts, configMount: true },
     }))).not.toThrow();
+  });
+
+  test('rejects a read-write instructions mount without autoMaterialize (split-brain guard)', () => {
+    // Workspace writes are Chronicle-first; the injection reads disk. A rw
+    // mount that never materializes would silently freeze the injection at
+    // the pre-curation content.
+    expect(() => validateRecipe(recipe({
+      instructions: { path: 'products/AGENTS.md' },
+      workspace: { mounts: [{ name: 'products', path: './output', mode: 'read-write' }] },
+    }))).toThrow(/autoMaterialize/);
+    // Mode defaults to read-write, so an unmoded mount needs it too.
+    expect(() => validateRecipe(recipe({
+      instructions: true,
+      workspace: { mounts: [{ name: 'instructions', path: './instructions' }] },
+    }))).toThrow(/autoMaterialize/);
+  });
+
+  test('cross-checks against the implicit default workspace too', () => {
+    // `instructions: true` with the implicit workspace (mounts input +
+    // products) can never inject — the default path's mount cannot exist.
+    // That used to validate and be dead config; now it fails at load.
+    expect(() => validateRecipe(recipe({ instructions: true })))
+      .toThrow(/implicit default\s+mounts/);
+    expect(() => validateRecipe(recipe({ instructions: true, workspace: true })))
+      .toThrow(/implicit default\s+mounts/);
+    // The implicit read-only 'input' mount is a valid target (file maintained
+    // outside the agent).
+    expect(() => validateRecipe(recipe({ instructions: { path: 'input/AGENTS.md' } })))
+      .not.toThrow();
+    // The implicit 'products' mount is rw without autoMaterialize — and the
+    // implicit workspace cannot set it, so this directs to explicit mounts.
+    expect(() => validateRecipe(recipe({ instructions: { path: 'products/AGENTS.md' } })))
+      .toThrow(/implicit default workspace cannot/);
   });
 
   test('allows instructions: false alongside workspace: false', () => {

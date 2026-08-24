@@ -10,10 +10,13 @@
   every turn, ephemeral subagents included. `true` for defaults
   (`instructions/AGENTS.md`, 32 KB cap, `system` position) or
   `{ path, header, maxBytes, position }`. Reads resolve through the workspace
-  mount (scoping + traversal guard apply), are cached by `(mtime, size)`, and
-  fail open — a missing file or mount never blocks inference. Recipe
-  validation cross-checks the path's mount prefix against explicitly declared
-  workspace mounts at load time.
+  mount (scoping + traversal guard apply), are bounded to `maxBytes`, reject
+  symlinks leading outside the mount (realpath containment), are cached by
+  `(realpath, mtime, size)`, and fail open — a missing file never blocks
+  inference. Recipe validation cross-checks the path's mount prefix against
+  the effective workspace mounts (explicit and implicit alike) at load time,
+  and requires `autoMaterialize: true` on a read-write instructions mount so
+  agent curation edits actually reach the disk-side injection.
 
 ### Fixed
 
