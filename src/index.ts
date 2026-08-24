@@ -51,6 +51,7 @@ import { ObserversModule } from './modules/observers-module.js';
 import { IdentityModule } from './modules/identity-module.js';
 import { McplAdminModule } from './modules/mcpl-admin-module.js';
 import { TtsRelayModule } from './modules/tts-relay-module.js';
+import { InstructionsModule } from './modules/instructions-module.js';
 import { loadMcplServers, applyAgentOverlay, composeMcplChildEnv, DEFAULT_CONFIG_PATH, DEFAULT_AGENT_OVERLAY_PATH } from './mcpl-config.js';
 import { SessionManager } from './session-manager.js';
 import { resolveAgentName } from './agent-name.js';
@@ -303,6 +304,20 @@ async function createFramework(
 
     workspaceModule = new WorkspaceModule({ mounts });
     moduleInstances.push(workspaceModule);
+  }
+
+  // Shared operating instructions — opt-in per recipe. Injects a living
+  // instructions document (read through a workspace mount) into EVERY
+  // agent's context on every turn — resident and ephemeral subagents alike —
+  // via gatherContext. Requires the workspace module; validateRecipe rejects
+  // the instructions+`workspace: false` pairing, so workspaceModule is
+  // non-null here (the guard keeps the module fail-open regardless).
+  if (modules.instructions) {
+    const instructionsConfig =
+      typeof modules.instructions === 'object' ? modules.instructions : {};
+    const instructionsModule = new InstructionsModule(instructionsConfig);
+    if (workspaceModule) instructionsModule.setWorkspace(workspaceModule);
+    moduleInstances.push(instructionsModule);
   }
 
   // Activity (typing indicators) — opt-in per recipe

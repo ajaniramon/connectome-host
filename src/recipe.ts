@@ -493,6 +493,34 @@ export interface RecipeModules {
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
   /**
+   * Shared operating instructions. OPT-IN — off by default. Reads a living
+   * instructions document (a CLAUDE.md analogue maintained in a workspace
+   * mount) and injects its current content into EVERY agent's context on
+   * EVERY turn — the resident agent and all ephemeral subagents — via the
+   * gatherContext hook. Injections are per-turn overlays (not persisted to
+   * Chronicle), so edits to the file take effect on the next turn.
+   *
+   * Requires `workspace` (the path below is a workspace mount path);
+   * enabling this alongside `workspace: false` fails validation. Missing
+   * mount or file is fail-open at runtime: no injection, warn once.
+   */
+  instructions?: boolean | {
+    /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
+    path?: string;
+    /**
+     * Heading line prepended to the injected block.
+     * Default "# Shared operating instructions (live document)".
+     */
+    header?: string;
+    /**
+     * Truncate content beyond this many bytes, appending a
+     * "[truncated at N bytes]" marker. Default 32768.
+     */
+    maxBytes?: number;
+    /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
+    position?: 'system' | 'beforeUser' | 'afterUser';
+  };
+  /**
    * Surface agent composition activity (typing indicators) to one or more
    * MCPL channels while inference is active. Opt-in per recipe; channel IDs
    * use the MCPL format (e.g. `zulip:tracker-miner-f`). The agent can also
@@ -1422,6 +1450,60 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (m.mode !== undefined && m.mode !== 'read-write' && m.mode !== 'read-only') {
           throw new Error(`workspace.mounts[${i}].mode must be "read-write" or "read-only"`);
+        }
+      }
+    }
+
+    // Validate instructions if present. It reads through a workspace mount,
+    // so pairing it with `workspace: false` is a config contradiction — fail
+    // at load, not with a silent no-injection at runtime.
+    if (mods.instructions !== undefined && mods.instructions !== false) {
+      if (mods.instructions !== true
+          && (typeof mods.instructions !== 'object' || Array.isArray(mods.instructions))) {
+        throw new Error('modules.instructions must be a boolean or object');
+      }
+      if (mods.workspace === false) {
+        throw new Error(
+          'modules.instructions requires modules.workspace: the instructions file is ' +
+          'read through a workspace mount, but this recipe sets workspace: false.',
+        );
+      }
+      if (typeof mods.instructions === 'object') {
+        const ins = mods.instructions as Record<string, unknown>;
+        const allowedInstructionKeys = new Set(['path', 'header', 'maxBytes', 'position']);
+        for (const key of Object.keys(ins)) {
+          if (!allowedInstructionKeys.has(key)) {
+            throw new Error(
+              `modules.instructions has unknown field ${JSON.stringify(key)} ` +
+              `(expected one of: ${[...allowedInstructionKeys].join(', ')}).`,
+            );
+          }
+        }
+        if (ins.path !== undefined) {
+          if (typeof ins.path !== 'string' || !ins.path.trim()) {
+            throw new Error('modules.instructions.path must be a non-empty string');
+          }
+          const slashIdx = ins.path.indexOf('/');
+          if (slashIdx <= 0 || slashIdx === ins.path.length - 1) {
+            throw new Error(
+              'modules.instructions.path must be a workspace path of the form ' +
+              `"<mountName>/<relativePath>", got ${JSON.stringify(ins.path)}.`,
+            );
+          }
+        }
+        if (ins.header !== undefined && typeof ins.header !== 'string') {
+          throw new Error('modules.instructions.header must be a string');
+        }
+        if (ins.maxBytes !== undefined
+            && (typeof ins.maxBytes !== 'number' || !Number.isInteger(ins.maxBytes) || ins.maxBytes <= 0)) {
+          throw new Error('modules.instructions.maxBytes must be a positive integer');
+        }
+        if (ins.position !== undefined
+            && ins.position !== 'system' && ins.position !== 'beforeUser' && ins.position !== 'afterUser') {
+          throw new Error(
+            `modules.instructions.position must be 'system', 'beforeUser', or 'afterUser', ` +
+            `got ${JSON.stringify(ins.position)}.`,
+          );
         }
       }
     }
