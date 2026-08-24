@@ -17,8 +17,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-const { version } = JSON.parse(readFileSync("package.json", "utf8"));
-const path = "CHANGELOG.md";
+const CHANGELOG = "CHANGELOG.md";
 const FRAGMENT_DIR = "changelog.d";
 // Canonical subsection order; a fragment's category must be one of these.
 const CATEGORIES = ["breaking", "added", "changed", "fixed"] as const;
@@ -30,11 +29,13 @@ const HEADINGS: Record<Category, string> = {
   fixed: "Fixed",
 };
 
-const text = readFileSync(path, "utf8");
-
+// Refusals throw and are reported at the entry point, which then lets the
+// process end on its own with exitCode 1. process.exit() would race the
+// stderr write when stderr is a pipe (asynchronous on macOS), leaving the
+// caller a bare failure status with no reason attached.
+class ReleaseError extends Error {}
 const fail = (msg: string): never => {
-  console.error(`release-changelog: ${msg}`);
-  process.exit(1);
+  throw new ReleaseError(msg);
 };
 
 interface Fragment {
@@ -45,20 +46,25 @@ interface Fragment {
 
 // Fragment grammar: every non-blank line starts a bullet or continues one
 // (indented two or more spaces; nested bullets included). Headings and
-// horizontal rules are refused even when indented — a '## ' line would
-// splice a fake section boundary into the released changelog, and an
-// indented one still renders as a heading inside the entry.
+// thematic breaks are refused wherever they appear — at top level a '## '
+// line would splice a fake section boundary into the released changelog,
+// and as item content ('- ## x', '  ## x') they still render as headings.
 const isBulletStart = (l: string): boolean => /^[-*] /.test(l);
 const isContinuation = (l: string): boolean => /^ {2,}\S/.test(l);
+const itemContent = (l: string): string => l.replace(/^\s*(?:[-*]\s+)?/, "");
+const isHeading = (s: string): boolean => /^#{1,6}(\s|$)/.test(s);
+// Thematic breaks may carry interior whitespace ('- - -', '* * *').
+const isRule = (s: string): boolean => /^([-*_=])(\s*\1){2,}\s*$/.test(s);
 const isBlockConstruct = (l: string): boolean =>
-  /^\s*#{1,6}(\s|$)/.test(l) || /^\s*([-=*_])\1{2,}\s*$/.test(l);
+  isRule(l.trim()) || isHeading(itemContent(l));
 
 // The directory is scanned fail-closed: anything that is not README.md or
 // a well-formed fragment file aborts the release, so an entry can never be
 // silently left out (e.g. a fragment created under a 'fix/' subdirectory
 // because the slug was taken verbatim from a branch name).
-const fragments: Fragment[] = [];
-if (existsSync(FRAGMENT_DIR)) {
+function collectFragments(): Fragment[] {
+  const fragments: Fragment[] = [];
+  if (!existsSync(FRAGMENT_DIR)) return fragments;
   const entries = readdirSync(FRAGMENT_DIR, { withFileTypes: true }).sort(
     (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
   );
@@ -97,33 +103,8 @@ if (existsSync(FRAGMENT_DIR)) {
     }
     fragments.push({ name, category: m[1] as Category, body });
   }
+  return fragments;
 }
-
-// Exactly one Unreleased heading. A second one silently strands entries:
-// only the first is ever cut, so anything filed under a later heading is
-// never released and never reaches the GitHub release notes.
-const headings = [...text.matchAll(/^## Unreleased[ \t]*$/gm)];
-if (headings.length === 0) {
-  fail("no '## Unreleased' section in CHANGELOG.md — add one before releasing.");
-}
-if (headings.length > 1) {
-  const lines = headings.map((m) => text.slice(0, m.index).split("\n").length);
-  fail(
-    `${headings.length} '## Unreleased' headings (lines ${lines.join(", ")}). ` +
-      "Only the first is released; fold them into one before releasing.",
-  );
-}
-const [header] = headings;
-
-const escaped = version.replace(/[.]/g, "\\.");
-if (new RegExp(`^## ${escaped}([^0-9]|$)`, "m").test(text)) {
-  fail(`a '## ${version}' section already exists.`);
-}
-
-const afterHeader = text.slice(header.index + header[0].length);
-const nextSection = afterHeader.search(/^## /m);
-const oldBody = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
-const rest = nextSection === -1 ? "" : afterHeader.slice(nextSection);
 
 // Merge fragment bullets into the Unreleased body's subsection structure.
 // Directly-filed entries are kept; a fragment joins the first subsection
@@ -141,7 +122,7 @@ function mergeFragments(body: string, frags: Fragment[]): string {
   for (const line of body.split("\n")) {
     const h = line.match(/^###\s+(.*)$/);
     if (h) {
-      current = { title: h[1].trim(), lines: [] };
+      current = { title: (h[1] ?? "").trim(), lines: [] };
       parts.push(current);
     } else if (current) {
       current.lines.push(line);
@@ -171,27 +152,70 @@ function mergeFragments(body: string, frags: Fragment[]): string {
   return chunks.join("\n\n");
 }
 
-const merged = mergeFragments(oldBody, fragments);
-if (!/^\s*[-*] /m.test(merged)) {
-  fail(
-    `nothing to release as ${version} — no fragments in ${FRAGMENT_DIR}/ ` +
-      "and no entries under '## Unreleased'.",
+function main(): void {
+  const { version } = JSON.parse(readFileSync("package.json", "utf8")) as {
+    version: string;
+  };
+  const text = readFileSync(CHANGELOG, "utf8");
+  const fragments = collectFragments();
+
+  // Exactly one Unreleased heading. A second one silently strands entries:
+  // only the first is ever cut, so anything filed under a later heading is
+  // never released and never reaches the GitHub release notes.
+  const headings = [...text.matchAll(/^## Unreleased[ \t]*$/gm)];
+  if (headings.length === 0) {
+    fail(`no '## Unreleased' section in ${CHANGELOG} — add one before releasing.`);
+  }
+  if (headings.length > 1) {
+    const lines = headings.map((m) => text.slice(0, m.index ?? 0).split("\n").length);
+    fail(
+      `${headings.length} '## Unreleased' headings (lines ${lines.join(", ")}). ` +
+        "Only the first is released; fold them into one before releasing.",
+    );
+  }
+  const header = headings[0]!;
+  const headerIndex = header.index ?? 0;
+
+  const escaped = version.replace(/[.]/g, "\\.");
+  if (new RegExp(`^## ${escaped}([^0-9]|$)`, "m").test(text)) {
+    fail(`a '## ${version}' section already exists.`);
+  }
+
+  const afterHeader = text.slice(headerIndex + header[0].length);
+  const nextSection = afterHeader.search(/^## /m);
+  const oldBody = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
+  const rest = nextSection === -1 ? "" : afterHeader.slice(nextSection);
+
+  const merged = mergeFragments(oldBody, fragments);
+  if (!/^[ \t]*[-*] /m.test(merged)) {
+    fail(
+      `nothing to release as ${version} — no fragments in ${FRAGMENT_DIR}/ ` +
+        "and no entries under '## Unreleased'.",
+    );
+  }
+
+  // Spliced by index rather than string-replaced: `text.replace("## Unreleased", …)`
+  // would hit the first *substring* occurrence, which is not necessarily the
+  // heading the regex matched (an inline mention of `## Unreleased` in prose
+  // comes first) and would inject the version heading into the wrong place.
+  const date = new Date().toISOString().slice(0, 10);
+  writeFileSync(
+    CHANGELOG,
+    text.slice(0, headerIndex) +
+      `## Unreleased\n\n## ${version} — ${date}\n\n${merged}\n\n` +
+      rest,
+  );
+  for (const f of fragments) unlinkSync(join(FRAGMENT_DIR, f.name));
+  console.log(
+    `${CHANGELOG}: released '## ${version} — ${date}' from ${fragments.length} ` +
+      "fragment(s) plus the Unreleased section.",
   );
 }
 
-// Spliced by index rather than string-replaced: `text.replace("## Unreleased", …)`
-// would hit the first *substring* occurrence, which is not necessarily the
-// heading the regex matched (an inline mention of `## Unreleased` in prose
-// comes first) and would inject the version heading into the wrong place.
-const date = new Date().toISOString().slice(0, 10);
-writeFileSync(
-  path,
-  text.slice(0, header.index) +
-    `## Unreleased\n\n## ${version} — ${date}\n\n${merged}\n\n` +
-    rest,
-);
-for (const f of fragments) unlinkSync(join(FRAGMENT_DIR, f.name));
-console.log(
-  `CHANGELOG.md: released '## ${version} — ${date}' from ${fragments.length} ` +
-    `fragment(s) plus the Unreleased section.`,
-);
+try {
+  main();
+} catch (e) {
+  if (!(e instanceof ReleaseError)) throw e;
+  console.error(`release-changelog: ${e.message}`);
+  process.exitCode = 1;
+}
