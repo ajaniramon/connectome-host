@@ -1,5 +1,9 @@
 # Changelog
 
+Entries land with the change that causes them, as fragment files in
+[`changelog.d/`](changelog.d/) that are folded into a version section at
+release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
+
 ## Unreleased
 
 ### Added
