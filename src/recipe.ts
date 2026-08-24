@@ -13,6 +13,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
+import { buildWorkspaceMounts } from './workspace-mounts.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -492,6 +493,52 @@ export interface RecipeModules {
   };
   wake?: boolean | import('@animalabs/agent-framework').GateConfig;
   workspace?: boolean | { mounts: RecipeWorkspaceMount[]; configMount?: boolean };
+  /**
+   * Shared operating instructions. OPT-IN — off by default. Reads a living
+   * instructions document (a CLAUDE.md analogue maintained in a workspace
+   * mount) and injects its current content into EVERY agent's context on
+   * EVERY turn — the resident agent and all ephemeral subagents — via the
+   * gatherContext hook. Injections are per-turn overlays (not persisted to
+   * Chronicle), so edits to the file take effect on the next turn.
+   *
+   * Requires `workspace` (the path below is a workspace mount path);
+   * enabling this alongside `workspace: false` fails validation. The mount
+   * named by the path is cross-checked at load time in every configuration
+   * (explicit mounts and the implicit "input"+"products" default alike), so
+   * a path naming a nonexistent mount is a load error, never a silent
+   * no-injection. A read-write instructions mount must also set
+   * `autoMaterialize: true`: workspace writes are Chronicle-first and the
+   * injection reads disk, so without materialization an agent's own
+   * curation edits would never reach the injection. A read-only mount is
+   * the alternative when the file is maintained outside the agent (edits
+   * then propagate to the injection but not to `workspace--read`, which
+   * serves Chronicle). A missing FILE remains fail-open at runtime: no
+   * injection, warn once.
+   *
+   * Cache economics: with position 'system' the injected block sits in the
+   * prompt-cache prefix of every agent, so each EDIT to the file is a
+   * fleet-wide cache cold start on the next turn (steady state between
+   * edits caches normally). Curate in batches rather than per-message;
+   * 'afterUser' is the cache-cheap, lower-salience alternative.
+   */
+  instructions?: boolean | {
+    /** Workspace path "<mountName>/<relativePath>". Default "instructions/AGENTS.md". */
+    path?: string;
+    /**
+     * Heading line prepended to the injected block.
+     * Default "# Shared operating instructions (live document)".
+     */
+    header?: string;
+    /**
+     * Truncate content beyond this many bytes, appending a
+     * "[truncated: first N of M bytes]" marker (N may sit up to 3 bytes
+     * under the cap when a multibyte character straddles it). At most this
+     * many bytes are ever read from disk. Default 32768.
+     */
+    maxBytes?: number;
+    /** Where the block lands: 'system' (default) | 'beforeUser' | 'afterUser'. */
+    position?: 'system' | 'beforeUser' | 'afterUser';
+  };
   /**
    * Surface agent composition activity (typing indicators) to one or more
    * MCPL channels while inference is active. Opt-in per recipe; channel IDs
@@ -1422,6 +1469,122 @@ export function validateRecipe(raw: unknown): Recipe {
         }
         if (m.mode !== undefined && m.mode !== 'read-write' && m.mode !== 'read-only') {
           throw new Error(`workspace.mounts[${i}].mode must be "read-write" or "read-only"`);
+        }
+      }
+    }
+
+    // Validate instructions if present. It reads through a workspace mount,
+    // so pairing it with `workspace: false` is a config contradiction — fail
+    // at load, not with a silent no-injection at runtime.
+    if (mods.instructions !== undefined && mods.instructions !== false) {
+      if (mods.instructions !== true
+          && (typeof mods.instructions !== 'object' || Array.isArray(mods.instructions))) {
+        throw new Error('modules.instructions must be a boolean or object');
+      }
+      if (mods.workspace === false) {
+        throw new Error(
+          'modules.instructions requires modules.workspace: the instructions file is ' +
+          'read through a workspace mount, but this recipe sets workspace: false.',
+        );
+      }
+      if (typeof mods.instructions === 'object') {
+        const ins = mods.instructions as Record<string, unknown>;
+        const allowedInstructionKeys = new Set(['path', 'header', 'maxBytes', 'position']);
+        for (const key of Object.keys(ins)) {
+          if (!allowedInstructionKeys.has(key)) {
+            throw new Error(
+              `modules.instructions has unknown field ${JSON.stringify(key)} ` +
+              `(expected one of: ${[...allowedInstructionKeys].join(', ')}).`,
+            );
+          }
+        }
+        if (ins.path !== undefined) {
+          if (typeof ins.path !== 'string' || !ins.path.trim()) {
+            throw new Error('modules.instructions.path must be a non-empty string');
+          }
+          const slashIdx = ins.path.indexOf('/');
+          if (slashIdx <= 0 || slashIdx === ins.path.length - 1) {
+            throw new Error(
+              'modules.instructions.path must be a workspace path of the form ' +
+              `"<mountName>/<relativePath>", got ${JSON.stringify(ins.path)}.`,
+            );
+          }
+        }
+        if (ins.header !== undefined && typeof ins.header !== 'string') {
+          throw new Error('modules.instructions.header must be a string');
+        }
+        if (ins.maxBytes !== undefined
+            && (typeof ins.maxBytes !== 'number' || !Number.isInteger(ins.maxBytes) || ins.maxBytes <= 0)) {
+          throw new Error('modules.instructions.maxBytes must be a positive integer');
+        }
+        if (ins.position !== undefined
+            && ins.position !== 'system' && ins.position !== 'beforeUser' && ins.position !== 'afterUser') {
+          throw new Error(
+            `modules.instructions.position must be 'system', 'beforeUser', or 'afterUser', ` +
+            `got ${JSON.stringify(ins.position)}.`,
+          );
+        }
+      }
+
+      // The mount the instructions path names is knowable at load time in
+      // EVERY configuration — explicit mounts from the declaration, the
+      // implicit default workspace from the fixed input/products pair the
+      // host builds — so a typo, the default "instructions/…" path with no
+      // matching mount, or `instructions: true` on the implicit workspace
+      // (whose mount set can never contain "instructions") all fail here
+      // instead of as a silent no-injection at runtime.
+      //
+      // A read-write instructions mount additionally requires
+      // autoMaterialize: workspace write/edit are Chronicle-first and reach
+      // disk only when the mount materializes, while this module reads disk
+      // — without it, an agent's own curation edits would never appear in
+      // the injection (and its workspace read would show the new content,
+      // hiding the drift entirely). Read-only mounts are exempt: disk is
+      // their only write path.
+      {
+        const effectivePath =
+          typeof mods.instructions === 'object'
+              && typeof (mods.instructions as { path?: unknown }).path === 'string'
+            ? (mods.instructions as { path: string }).path
+            : 'instructions/AGENTS.md'; // keep in sync with DEFAULT_INSTRUCTIONS_PATH
+        const mountName = effectivePath.slice(0, effectivePath.indexOf('/'));
+        // Reason over the SAME mount construction the runtime uses — one
+        // builder, no validator-vs-host drift (the storePath placeholder is
+        // irrelevant here; only names/modes/flags are consulted).
+        const declaredExplicitly =
+          !!mods.workspace && typeof mods.workspace === 'object' &&
+          !!(mods.workspace as { mounts?: unknown }).mounts;
+        const effectiveMounts =
+          buildWorkspaceMounts(mods.workspace as RecipeModules['workspace'], '.') ?? [];
+        const match = effectiveMounts.find((m) => m.name === mountName);
+        if (!match) {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} names workspace mount ` +
+            `${JSON.stringify(mountName)}, but the ${declaredExplicitly ? 'declared' : 'implicit default'} ` +
+            `mounts are: ${effectiveMounts.map((m) => JSON.stringify(m.name)).join(', ')}. ` +
+            `(The default path "instructions/AGENTS.md" requires a workspace mount named ` +
+            `"instructions" — declare one under modules.workspace.mounts.)`,
+          );
+        }
+        if (match.name === '_config') {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} reads through the ` +
+            `host-managed "_config" mount, which does NOT auto-materialize: agent edits stay ` +
+            `Chronicle-side and only reach disk after branch-changing commands, so the ` +
+            `instructions injection would silently serve stale content. Use a dedicated ` +
+            `instructions mount instead.`,
+          );
+        }
+        if (match.mode !== 'read-only' && match.autoMaterialize !== true) {
+          throw new Error(
+            `modules.instructions.path ${JSON.stringify(effectivePath)} uses read-write mount ` +
+            `${JSON.stringify(mountName)} without autoMaterialize. Workspace writes are ` +
+            `Chronicle-first and reach disk only when the mount materializes, while the ` +
+            `instructions injection reads disk — agent edits to the file would silently never ` +
+            `take effect. Set autoMaterialize: true on the mount` +
+            `${declaredExplicitly ? '' : ' (the implicit default workspace cannot; declare explicit mounts)'}, ` +
+            `or make the mount read-only if the file is maintained outside the agent.`,
+          );
         }
       }
     }
