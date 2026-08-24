@@ -5,6 +5,15 @@
 ### Added
 
 - Recipes accept `agent.proseRouting: "disabled"` for tool-only external publication when paired with a supporting Agent Framework release.
+- **`modules.instructions`** — a shared living-instructions file (a CLAUDE.md
+  analogue kept in a workspace mount) injected into every agent's context on
+  every turn, ephemeral subagents included. `true` for defaults
+  (`instructions/AGENTS.md`, 32 KB cap, `system` position) or
+  `{ path, header, maxBytes, position }`. Reads resolve through the workspace
+  mount (scoping + traversal guard apply), are cached by `(mtime, size)`, and
+  fail open — a missing file or mount never blocks inference. Recipe
+  validation cross-checks the path's mount prefix against explicitly declared
+  workspace mounts at load time.
 
 ### Fixed
 
