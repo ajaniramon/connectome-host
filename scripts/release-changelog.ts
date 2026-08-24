@@ -1,32 +1,163 @@
 // Runs as npm's `version` lifecycle hook (see package.json): at that point
 // package.json already carries the new version, and files staged here are
 // included in the release commit that `npm version` then creates and tags.
-import { readFileSync, writeFileSync } from "node:fs";
+//
+// Folds the pending fragments in changelog.d/ (one file per change,
+// `<slug>.<breaking|added|changed|fixed>.md`) together with anything filed
+// directly under the standing `## Unreleased` section into a new
+// `## X.Y.Z — YYYY-MM-DD` section, deletes the consumed fragments, and
+// leaves a fresh empty `## Unreleased` above it. Refuses to release when
+// there is nothing to release, or when the input's shape is ambiguous.
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 
 const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 const path = "CHANGELOG.md";
+const FRAGMENT_DIR = "changelog.d";
+// Canonical subsection order; a fragment's category must be one of these.
+const CATEGORIES = ["breaking", "added", "changed", "fixed"] as const;
+type Category = (typeof CATEGORIES)[number];
+const HEADINGS: Record<Category, string> = {
+  breaking: "Breaking",
+  added: "Added",
+  changed: "Changed",
+  fixed: "Fixed",
+};
+
 const text = readFileSync(path, "utf8");
 
-const header = text.match(/^## Unreleased[ \t]*$/m);
-if (!header || header.index === undefined) {
-  console.error("CHANGELOG.md: no '## Unreleased' section — add one before releasing.");
+const fail = (msg: string): never => {
+  console.error(`release-changelog: ${msg}`);
   process.exit(1);
+};
+
+interface Fragment {
+  name: string;
+  category: Category;
+  body: string;
 }
+
+const fragments: Fragment[] = [];
+if (existsSync(FRAGMENT_DIR)) {
+  for (const name of readdirSync(FRAGMENT_DIR).sort()) {
+    if (name === "README.md" || !name.endsWith(".md")) continue;
+    const m = name.match(/\.(breaking|added|changed|fixed)\.md$/);
+    if (!m) {
+      fail(
+        `${FRAGMENT_DIR}/${name}: unrecognized category — name fragments ` +
+          `'<slug>.<${CATEGORIES.join("|")}>.md' so the entry is not silently stranded.`,
+      );
+    }
+    const body = readFileSync(join(FRAGMENT_DIR, name), "utf8").trim();
+    if (!body) fail(`${FRAGMENT_DIR}/${name}: empty fragment.`);
+    if (!/^[-*] /.test(body)) {
+      fail(
+        `${FRAGMENT_DIR}/${name}: a fragment is one or more markdown bullets ('- …').`,
+      );
+    }
+    fragments.push({ name, category: m[1] as Category, body });
+  }
+}
+
+// Exactly one Unreleased heading. A second one silently strands entries:
+// only the first is ever cut, so anything filed under a later heading is
+// never released and never reaches the GitHub release notes.
+const headings = [...text.matchAll(/^## Unreleased[ \t]*$/gm)];
+if (headings.length === 0) {
+  fail("no '## Unreleased' section in CHANGELOG.md — add one before releasing.");
+}
+if (headings.length > 1) {
+  const lines = headings.map((m) => text.slice(0, m.index).split("\n").length);
+  fail(
+    `${headings.length} '## Unreleased' headings (lines ${lines.join(", ")}). ` +
+      "Only the first is released; fold them into one before releasing.",
+  );
+}
+const [header] = headings;
 
 const escaped = version.replace(/[.]/g, "\\.");
 if (new RegExp(`^## ${escaped}([^0-9]|$)`, "m").test(text)) {
-  console.error(`CHANGELOG.md: a '## ${version}' section already exists.`);
-  process.exit(1);
+  fail(`a '## ${version}' section already exists.`);
 }
 
 const afterHeader = text.slice(header.index + header[0].length);
 const nextSection = afterHeader.search(/^## /m);
-const unreleasedBody = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
-if (!/^\s*[-*] /m.test(unreleasedBody)) {
-  console.error(`CHANGELOG.md: '## Unreleased' has no entries — nothing to release as ${version}.`);
-  process.exit(1);
+const oldBody = nextSection === -1 ? afterHeader : afterHeader.slice(0, nextSection);
+const rest = nextSection === -1 ? "" : afterHeader.slice(nextSection);
+
+// Merge fragment bullets into the Unreleased body's subsection structure.
+// Directly-filed entries are kept; a fragment joins the first subsection
+// whose title starts with its category (so audience-qualified headings like
+// '### Breaking (recipe authors only)' still attract 'breaking' fragments),
+// or a new canonical subsection. Output is emitted in canonical order.
+function mergeFragments(body: string, frags: Fragment[]): string {
+  interface Part {
+    title: string;
+    lines: string[];
+  }
+  const preamble: string[] = [];
+  const parts: Part[] = [];
+  let current: Part | null = null;
+  for (const line of body.split("\n")) {
+    const h = line.match(/^###\s+(.*)$/);
+    if (h) {
+      current = { title: h[1].trim(), lines: [] };
+      parts.push(current);
+    } else if (current) {
+      current.lines.push(line);
+    } else {
+      preamble.push(line);
+    }
+  }
+  for (const f of frags) {
+    let part = parts.find((p) => p.title.toLowerCase().startsWith(f.category));
+    if (!part) {
+      part = { title: HEADINGS[f.category], lines: [] };
+      parts.push(part);
+    }
+    part.lines.push("", ...f.body.split("\n"));
+  }
+  const rank = (t: string): number => {
+    const i = CATEGORIES.findIndex((c) => t.toLowerCase().startsWith(c));
+    return i === -1 ? CATEGORIES.length : i;
+  };
+  const chunks: string[] = [];
+  const pre = preamble.join("\n").trim();
+  if (pre) chunks.push(pre);
+  for (const p of [...parts].sort((a, b) => rank(a.title) - rank(b.title))) {
+    const content = p.lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    chunks.push(content ? `### ${p.title}\n\n${content}` : `### ${p.title}`);
+  }
+  return chunks.join("\n\n");
 }
 
+const merged = mergeFragments(oldBody, fragments);
+if (!/^\s*[-*] /m.test(merged)) {
+  fail(
+    `nothing to release as ${version} — no fragments in ${FRAGMENT_DIR}/ ` +
+      "and no entries under '## Unreleased'.",
+  );
+}
+
+// Spliced by index rather than string-replaced: `text.replace("## Unreleased", …)`
+// would hit the first *substring* occurrence, which is not necessarily the
+// heading the regex matched (an inline mention of `## Unreleased` in prose
+// comes first) and would inject the version heading into the wrong place.
 const date = new Date().toISOString().slice(0, 10);
-writeFileSync(path, text.replace(header[0], `## Unreleased\n\n## ${version} — ${date}`));
-console.log(`CHANGELOG.md: cut Unreleased into '## ${version} — ${date}'.`);
+writeFileSync(
+  path,
+  text.slice(0, header.index) +
+    `## Unreleased\n\n## ${version} — ${date}\n\n${merged}\n\n` +
+    rest,
+);
+for (const f of fragments) unlinkSync(join(FRAGMENT_DIR, f.name));
+console.log(
+  `CHANGELOG.md: released '## ${version} — ${date}' from ${fragments.length} ` +
+    `fragment(s) plus the Unreleased section.`,
+);
