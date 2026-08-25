@@ -56,6 +56,9 @@ export interface RecipeStrategy {
    * recall, or non-target raw recent material). One call, not a refusal
    * ladder. Source-preserving; L1 only. Default off. */
   compressionSourceOnly?: boolean;
+  /** Token budget for prior recall-pair context in compression/merge
+   * requests (Context Manager `compressionRecallBudgetTokens`). */
+  compressionRecallBudgetTokens?: number;
   positionedRecallPairs?: boolean;
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
@@ -1309,6 +1312,16 @@ export function validateRecipe(raw: unknown): Recipe {
       && typeof strategy.compressionSourceOnly !== 'boolean'
     ) {
       throw new Error('Recipe agent.strategy.compressionSourceOnly must be a boolean.');
+    }
+    if (
+      strategy.compressionRecallBudgetTokens !== undefined
+      && (
+        typeof strategy.compressionRecallBudgetTokens !== 'number'
+        || !Number.isSafeInteger(strategy.compressionRecallBudgetTokens)
+        || strategy.compressionRecallBudgetTokens <= 0
+      )
+    ) {
+      throw new Error('Recipe agent.strategy.compressionRecallBudgetTokens must be a positive safe integer.');
     }
   }
 
