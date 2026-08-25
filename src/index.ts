@@ -58,7 +58,7 @@ import { generateSessionName } from './synesthete.js';
 import {
   type Recipe,
   DEFAULT_RECIPE,
-  loadRecipe,
+  loadRecipeDetailed,
   saveRecipe,
   loadSavedRecipe,
   clearSavedRecipe,
@@ -131,8 +131,10 @@ async function resolveRecipe(): Promise<Recipe> {
 
   if (source) {
     try {
-      const recipe = await loadRecipe(source);
-      saveRecipe(config.dataDir, recipe);
+      // Save the unresolved (pre-substitution) form: $DATA_DIR is typically
+      // host-mounted and backed up, so resolved secrets must never land there.
+      const { recipe, persistable } = await loadRecipeDetailed(source);
+      saveRecipe(config.dataDir, persistable);
       console.log(`Loaded recipe: ${recipe.name}${recipe.description ? ` — ${recipe.description}` : ''}`);
       return recipe;
     } catch (err) {
@@ -141,11 +143,21 @@ async function resolveRecipe(): Promise<Recipe> {
     }
   }
 
-  // Try saved recipe
-  const saved = loadSavedRecipe(config.dataDir);
-  if (saved) {
-    console.log(`Resuming recipe: ${saved.name}`);
-    return saved;
+  // Try saved recipe. Re-resolves ${VAR} references against the CURRENT
+  // environment, so a missing secret fails loudly here rather than starting
+  // a misconfigured agent on the default recipe.
+  try {
+    const saved = await loadSavedRecipe(config.dataDir);
+    if (saved) {
+      console.log(`Resuming recipe: ${saved.name}`);
+      return saved;
+    }
+  } catch (err) {
+    console.error(
+      `Failed to resume saved recipe from ${config.dataDir}:`,
+      err instanceof Error ? err.message : err,
+    );
+    process.exit(1);
   }
 
   return DEFAULT_RECIPE;
