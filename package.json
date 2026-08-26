@@ -17,7 +17,7 @@
     "@animalabs/agent-framework": "^0.10.0",
     "@animalabs/chronicle": "^0.3.0",
     "@animalabs/context-manager": "^0.6.3",
-    "@animalabs/membrane": "^0.5.78",
+    "@animalabs/membrane": "^0.5.80",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {

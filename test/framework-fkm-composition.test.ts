@@ -86,7 +86,7 @@ describe('framework FKM composition', () => {
     });
   });
 
-  test('composes validation, serialization, and AF/CM wiring for the merged FKM settings without cross-agent bleed', () => {
+  test('composes validation, serialization, and AF/CM wiring for the merged FKM settings without cross-agent bleed', async () => {
     const parsed = validateRecipe(recipe({
       provider: 'openai-responses',
       maxTokens: 4_096,
@@ -109,8 +109,10 @@ describe('framework FKM composition', () => {
 
     const dir = mkdtempSync(join(tmpdir(), 'connectome-fkm-'));
     tempDirs.push(dir);
-    saveRecipe(dir, parsed);
-    const reloaded = loadSavedRecipe(dir);
+    // Saving an already-resolved recipe through the new unresolved-snapshot
+    // path is legal: substitution over resolved content is a no-op.
+    saveRecipe(dir, parsed as unknown as Record<string, unknown>);
+    const reloaded = await loadSavedRecipe(dir);
     expect(reloaded).not.toBeNull();
 
     expect(reloaded!.agent.sameRoundThinkTextPolicy).toBe('private');

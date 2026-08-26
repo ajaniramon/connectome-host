@@ -11,7 +11,7 @@
  *   - Built-in default (generic assistant)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 
@@ -956,6 +956,27 @@ export function substituteEnvVars(value: unknown, source: string): unknown {
 type RecipeSourceBase = { kind: 'file'; dir: string } | { kind: 'url'; base: string };
 
 /**
+ * A loaded recipe plus the form of it that is safe to persist.
+ *
+ * `recipe` is fully resolved: `${VAR}` env references substituted, relative
+ * child/extension paths made absolute, URL systemPrompt fetched. It is what
+ * the running host consumes — and it can contain secrets (API tokens pulled
+ * from the environment), so it must never be written to disk.
+ *
+ * `persistable` is the raw pre-substitution recipe JSON with only the
+ * source-relative paths (`modules.fleet.children[].recipe`,
+ * `extensions[*].path`) resolved to their final absolute form — those need
+ * the original source base, which a resumed session no longer has. Every
+ * `${VAR}` reference and any URL systemPrompt stay unresolved, so the file
+ * `saveRecipe` writes carries no secret material and re-resolves against the
+ * *current* environment on resume.
+ */
+export interface LoadedRecipe {
+  recipe: Recipe;
+  persistable: Record<string, unknown>;
+}
+
+/**
  * Load a recipe from a URL or local file path.
  * If the systemPrompt value is an HTTP(S) URL, fetches the text.
  * Recipe string values containing `${VAR}` patterns are substituted against
@@ -964,6 +985,15 @@ type RecipeSourceBase = { kind: 'file'; dir: string } | { kind: 'url'; base: str
  * parent recipe's directory (or URL base) so sibling recipes are portable.
  */
 export async function loadRecipe(source: string): Promise<Recipe> {
+  return (await loadRecipeDetailed(source)).recipe;
+}
+
+/**
+ * Like loadRecipe, but also returns the persistable (unresolved) form —
+ * see LoadedRecipe. Callers that snapshot the recipe to disk (index.ts's
+ * resolveRecipe) must save `persistable`, never `recipe`.
+ */
+export async function loadRecipeDetailed(source: string): Promise<LoadedRecipe> {
   let raw: unknown;
   let sourceBase: RecipeSourceBase;
 
@@ -979,11 +1009,54 @@ export async function loadRecipe(source: string): Promise<Recipe> {
     sourceBase = { kind: 'file', dir: dirname(path) };
   }
 
+  // Snapshot the pre-substitution form before substituteEnvVars walks the
+  // object — this is what gets persisted, so resolved secrets never do.
+  const persistable = structuredClone(raw) as Record<string, unknown>;
+
   raw = substituteEnvVars(raw, source);
   const recipe = validateRecipe(raw);
   resolveChildRecipePaths(recipe, sourceBase);
   resolveExtensionPaths(recipe, sourceBase);
-  return resolveSystemPrompt(recipe);
+  const resolved = await resolveSystemPrompt(recipe);
+  copyResolvedPathsIntoRaw(persistable, resolved);
+  return { recipe: resolved, persistable };
+}
+
+/**
+ * Copy the resolved `modules.fleet.children[].recipe` and
+ * `extensions[*].path` values from the resolved recipe into the raw
+ * pre-substitution snapshot. Those fields are resolved against the recipe's
+ * original source base (its directory or URL), which is gone by resume time
+ * — so the persisted form must carry them already-absolute. Substitution
+ * never changes object shape (it is a per-string replacement), so the two
+ * trees align index-for-index and key-for-key. Paths are not treated as
+ * secret: an env value that was interpolated into a child-recipe or
+ * extension path IS persisted in resolved form.
+ */
+function copyResolvedPathsIntoRaw(raw: Record<string, unknown>, recipe: Recipe): void {
+  const fleet = recipe.modules?.fleet;
+  const resolvedChildren = (typeof fleet === 'object' && fleet !== null) ? fleet.children : undefined;
+  if (Array.isArray(resolvedChildren)) {
+    const rawModules = raw.modules as Record<string, unknown> | undefined;
+    const rawFleet = rawModules?.fleet as Record<string, unknown> | undefined;
+    const rawChildren = (typeof rawFleet === 'object' && rawFleet !== null) ? rawFleet.children : undefined;
+    if (Array.isArray(rawChildren)) {
+      for (let i = 0; i < rawChildren.length && i < resolvedChildren.length; i++) {
+        const rawChild = rawChildren[i] as Record<string, unknown> | null;
+        if (rawChild && typeof rawChild === 'object' && typeof resolvedChildren[i]?.recipe === 'string') {
+          rawChild.recipe = resolvedChildren[i].recipe;
+        }
+      }
+    }
+  }
+
+  const rawExtensions = raw.extensions as Record<string, unknown> | undefined;
+  for (const [name, ext] of Object.entries(recipe.extensions ?? {})) {
+    const rawExt = rawExtensions?.[name] as Record<string, unknown> | undefined;
+    if (rawExt && typeof rawExt === 'object') {
+      rawExt.path = ext.path;
+    }
+  }
 }
 
 /**
@@ -1811,20 +1884,80 @@ function savedRecipePath(dataDir: string): string {
   return resolve(dataDir, '.recipe.json');
 }
 
-export function saveRecipe(dataDir: string, recipe: Recipe): void {
+/**
+ * Marker key stamped into saved `.recipe.json` snapshots that were written in
+ * unresolved form (post-fix). Its presence tells loadSavedRecipe to run the
+ * full substitute-and-validate pipeline on read; its absence means a legacy
+ * snapshot saved fully resolved, which must be loaded verbatim — running
+ * substitution over legacy content could hard-fail on a literal `${...}`
+ * that survived in prose (e.g. a systemPrompt documenting env-var syntax).
+ */
+export const SAVED_RECIPE_UNRESOLVED_KEY = '$unresolved';
+
+/**
+ * Snapshot a recipe to `$DATA_DIR/.recipe.json` so a later run without a
+ * recipe argument resumes the same configuration.
+ *
+ * Pass the `persistable` half of loadRecipeDetailed(), NOT the resolved
+ * recipe: `$DATA_DIR` is typically host-mounted and backed up, so the file
+ * must never contain substituted secrets. The snapshot keeps `${VAR}`
+ * references (and any URL systemPrompt) unresolved; loadSavedRecipe
+ * re-resolves them against the environment current at resume time.
+ *
+ * The file is written 0600 and chmod'd to 0600 even when it already exists,
+ * as defense in depth for legacy resolved snapshots being overwritten.
+ */
+export function saveRecipe(dataDir: string, persistable: Record<string, unknown>): void {
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(savedRecipePath(dataDir), JSON.stringify(recipe, null, 2) + '\n', 'utf-8');
+  const path = savedRecipePath(dataDir);
+  const withMarker = { [SAVED_RECIPE_UNRESOLVED_KEY]: true, ...persistable };
+  writeFileSync(path, JSON.stringify(withMarker, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 });
+  // writeFileSync's mode only applies on creation — enforce on overwrite too.
+  chmodSync(path, 0o600);
 }
 
-export function loadSavedRecipe(dataDir: string): Recipe | null {
+/**
+ * Load the `.recipe.json` snapshot for a resumed session, or null when there
+ * is none (or it is unreadable/invalid).
+ *
+ * Snapshots carrying SAVED_RECIPE_UNRESOLVED_KEY are re-resolved through the
+ * same pipeline loadRecipe uses — env substitution (so rotated secrets take
+ * effect on restart), validation, and URL systemPrompt fetch. A missing
+ * required `${VAR}` THROWS rather than returning null: silently falling back
+ * to the default recipe would start a misconfigured agent, and the loud
+ * failure names the variable to restore. A failed systemPrompt fetch throws
+ * for the same reason.
+ *
+ * Legacy snapshots (no marker — saved fully resolved by older versions) are
+ * validated and returned verbatim, exactly as before: no substitution, so a
+ * literal `${...}` that survived resolution in prose cannot fail the load.
+ */
+export async function loadSavedRecipe(dataDir: string): Promise<Recipe | null> {
   const path = savedRecipePath(dataDir);
   if (!existsSync(path)) return null;
+  let raw: unknown;
   try {
-    const raw = JSON.parse(readFileSync(path, 'utf-8'));
-    return validateRecipe(raw);
+    raw = JSON.parse(readFileSync(path, 'utf-8'));
   } catch {
     return null;
   }
+
+  if (!raw || typeof raw !== 'object' || !(SAVED_RECIPE_UNRESOLVED_KEY in raw)) {
+    // Legacy resolved snapshot: load verbatim (no substitution).
+    try {
+      return validateRecipe(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  const { [SAVED_RECIPE_UNRESOLVED_KEY]: _marker, ...unresolved } = raw as Record<string, unknown>;
+  // Deliberately outside a try/catch: substitution and validation errors on
+  // a snapshot we wrote ourselves are actionable operator errors (a rotated
+  // secret removed from the environment), not corruption to shrug off.
+  const substituted = substituteEnvVars(unresolved, path);
+  const recipe = validateRecipe(substituted);
+  return resolveSystemPrompt(recipe);
 }
 
 export function clearSavedRecipe(dataDir: string): void {
