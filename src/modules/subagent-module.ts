@@ -1376,6 +1376,18 @@ export class SubagentModule implements Module {
    *   3. parent agent's `maxTokens` (by default, subagents inherit their caller's budget)
    *   4. last-resort framework fallback (4096) — only reached if there's no parent at all
    */
+  /** Ephemeral agents inherit the caller's prose-routing mode. AF's Agent
+   *  defaults to 'locus' (ambient locus capture publishes plain prose to the
+   *  open channel), so a resident running proseRouting 'disabled' would still
+   *  spawn divers whose between-tool-calls prose leaks into its live channel
+   *  as parent speech — field-confirmed 2026-08-26. Falls back to the
+   *  configured parent agent, then to AF's own default. */
+  private resolveProseRouting(callerAgentName?: string): 'locus' | 'explicit' | 'hybrid' | 'disabled' | undefined {
+    const parentName = callerAgentName ?? this.config.parentAgentName;
+    if (!parentName) return undefined;
+    return this.framework?.getAgent(parentName)?.proseRouting;
+  }
+
   private resolveMaxTokens(callMaxTokens: number | undefined, parentAgentName?: string): number {
     if (callMaxTokens !== undefined) return callMaxTokens;
     if (this.config.defaultMaxTokens !== undefined) return this.config.defaultMaxTokens;
@@ -1703,6 +1715,9 @@ export class SubagentModule implements Module {
           model,
           systemPrompt: input.systemPrompt,
           maxTokens: this.resolveMaxTokens(input.maxTokens, _callerAgentName),
+          ...(this.resolveProseRouting(_callerAgentName) !== undefined
+            ? { proseRouting: this.resolveProseRouting(_callerAgentName) }
+            : {}),
           maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,
@@ -1855,6 +1870,9 @@ export class SubagentModule implements Module {
           model,
           systemPrompt,
           maxTokens: this.resolveMaxTokens(input.maxTokens, callerAgentName),
+          ...(this.resolveProseRouting(callerAgentName) !== undefined
+            ? { proseRouting: this.resolveProseRouting(callerAgentName) }
+            : {}),
           maxStreamTokens: 500_000,
           strategy: new KnowledgeStrategy({
             headWindowTokens: 2_000,

@@ -5,7 +5,7 @@
     "": {
       "name": "@animalabs/connectome-host",
       "dependencies": {
-        "@animalabs/agent-framework": "^0.10.0",
+        "@animalabs/agent-framework": "^0.11.0",
         "@animalabs/chronicle": "^0.3.0",
         "@animalabs/context-manager": "^0.6.3",
         "@animalabs/membrane": "^0.5.80",
@@ -19,7 +19,7 @@
     },
   },
   "packages": {
-    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.10.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/context-manager": "^0.6.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-ZFCoOF4/T+5aj3uwER49qQ3/XtzNRIVgNg00tNrUg/nCaSdj6XsDo91kqTen1bHCdNK9KB43hui6PDFpjPNOvw=="],
+    "@animalabs/agent-framework": ["@animalabs/agent-framework@0.11.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/context-manager": "^0.6.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-k3aZCTOYurNu4MyosU4nIiCJupXVnMHgHjWyfLeM84Z5hg9ICjuI5I5/1cuz8ZOvar1vyUnujBemAFbLzv2PjQ=="],
 
     "@animalabs/chronicle": ["@animalabs/chronicle@0.3.0", "", {}, "sha512-6BBJ9pWb8AnuHTNJTU07Y6Wut3IvdgWFxsy05IdlWcEnR5W23dlaBlaeJq7gDc7TwX05HfsDC+QZFEc69G+s4Q=="],
 
