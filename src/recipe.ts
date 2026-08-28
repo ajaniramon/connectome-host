@@ -129,8 +129,10 @@ export interface RecipeAgent {
    * `http://localhost:11434/v1` (Ollama), a vLLM server, Together, Groq,
    * NanoGPT... Required with `provider: 'openai-compatible'`, rejected with
    * any other provider (those have their own `*_BASE_URL` env overrides).
-   * The API key comes from `OPENAI_COMPATIBLE_API_KEY` (falling back to
-   * `OPENAI_API_KEY`); local servers may need none. `agent.model` is required
+   * The API key comes from `OPENAI_COMPATIBLE_API_KEY` only — deliberately no
+   * `OPENAI_API_KEY` fallback, since `baseUrl` is recipe-controlled and a real
+   * OpenAI credential must never travel silently to an arbitrary endpoint.
+   * Local servers may need none. `agent.model` is required
    * too — there is no sensible default model for an arbitrary endpoint.
    */
   baseUrl?: string;

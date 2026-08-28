@@ -84,7 +84,10 @@ const config = {
   authToken: process.env.ANTHROPIC_AUTH_TOKEN,
   openaiApiKey: process.env.OPENAI_API_KEY,
   openrouterApiKey: process.env.OPENROUTER_API_KEY,
-  openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY || process.env.OPENAI_API_KEY,
+  // Deliberately NO fallback to OPENAI_API_KEY: agent.baseUrl is
+  // recipe-controlled, so a fallback would silently send a real OpenAI
+  // credential as a Bearer token to whatever endpoint a recipe names.
+  openaiCompatibleApiKey: process.env.OPENAI_COMPATIBLE_API_KEY,
   codexBinary: process.env.CODEX_BINARY,
   model: process.env.MODEL,
   dataDir: process.env.DATA_DIR || './data',

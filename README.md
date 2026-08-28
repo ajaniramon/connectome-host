@@ -134,8 +134,10 @@ Any server speaking the OpenAI chat-completions API works through the generic
 }
 ```
 
-The API key is read from `OPENAI_COMPATIBLE_API_KEY` (falling back to
-`OPENAI_API_KEY`); local servers usually need none. `agent.model` is required —
+The API key is read from `OPENAI_COMPATIBLE_API_KEY` only — deliberately no
+`OPENAI_API_KEY` fallback: `baseUrl` is recipe-controlled, and a real OpenAI
+credential must never be sent silently to an arbitrary endpoint. Local
+servers usually need none. `agent.model` is required —
 there is no default model for an arbitrary endpoint. Tool calls use the
 standard `tool_calls` format, so the endpoint must support function calling
 for tool-using recipes. Provider-side prompt caching and cache accounting
@@ -180,7 +182,7 @@ npm install
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
 | `OPENAI_API_KEY` | — | OpenAI Platform key for `openai-responses` recipes |
-| `OPENAI_COMPATIBLE_API_KEY` | falls back to `OPENAI_API_KEY` | Key for `openai-compatible` recipes; omit for local servers |
+| `OPENAI_COMPATIBLE_API_KEY` | — | Key for `openai-compatible` recipes (no `OPENAI_API_KEY` fallback by design); omit for local servers |
 | `CODEX_BINARY` | `codex` | Codex CLI executable for `openai-codex` subscription auth |
 | `CODEX_HOME` | `~/.codex` | Codex credential/config directory |
 | `CODEX_BASE_URL` | ChatGPT Codex backend | Optional subscription transport override |
