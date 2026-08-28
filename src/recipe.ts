@@ -1260,15 +1260,36 @@ export function validateRecipe(raw: unknown): Recipe {
     if (typeof retry !== 'object' || retry === null || Array.isArray(retry)) {
       throw new Error(`Recipe agent.retry must be an object, got ${JSON.stringify(agent.retry)}.`);
     }
+    const RETRY_KEYS = ['maxRetries', 'retryDelayMs', 'backoffMultiplier', 'maxRetryDelayMs'] as const;
+    // Reject unknown keys: `{ maxRetires: 4 }` would otherwise validate clean,
+    // Membrane would ignore it, and the agent would sit at zero retries —
+    // exactly the hard-down mode this knob exists to close, wearing a config
+    // that looks like it fixed it.
+    for (const key of Object.keys(retry)) {
+      if (!(RETRY_KEYS as readonly string[]).includes(key) && key !== 'overloaded') {
+        throw new Error(`Recipe agent.retry has unknown key ${JSON.stringify(key)} (known: ${RETRY_KEYS.join(', ')}, overloaded).`);
+      }
+    }
     for (const key of ['maxRetries', 'retryDelayMs', 'backoffMultiplier', 'maxRetryDelayMs'] as const) {
       const v = retry[key];
       if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
         throw new Error(`Recipe agent.retry.${key} must be a non-negative number, got ${JSON.stringify(v)}.`);
       }
     }
-    if (retry.overloaded !== undefined
-        && (typeof retry.overloaded !== 'object' || retry.overloaded === null || Array.isArray(retry.overloaded))) {
-      throw new Error(`Recipe agent.retry.overloaded must be an object, got ${JSON.stringify(retry.overloaded)}.`);
+    if (retry.overloaded !== undefined) {
+      const overloaded = retry.overloaded as Record<string, unknown> | null;
+      if (typeof overloaded !== 'object' || overloaded === null || Array.isArray(overloaded)) {
+        throw new Error(`Recipe agent.retry.overloaded must be an object, got ${JSON.stringify(retry.overloaded)}.`);
+      }
+      for (const key of Object.keys(overloaded)) {
+        if (!(RETRY_KEYS as readonly string[]).includes(key)) {
+          throw new Error(`Recipe agent.retry.overloaded has unknown key ${JSON.stringify(key)} (known: ${RETRY_KEYS.join(', ')}).`);
+        }
+        const v = overloaded[key];
+        if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+          throw new Error(`Recipe agent.retry.overloaded.${key} must be a non-negative number, got ${JSON.stringify(v)}.`);
+        }
+      }
     }
   }
 

@@ -50,6 +50,15 @@ describe('recipe agent.retry', () => {
     expect(() => validateRecipe(recipe({ agent: { retry: null } }))).toThrow(/agent\.retry must be an object/);
   });
 
+  test('rejects unknown keys — a typo must not silently leave the agent at zero retries', () => {
+    expect(() => validateRecipe(recipe({ agent: { retry: { maxRetires: 4 } } }))).toThrow(/unknown key "maxRetires"/);
+    expect(() => validateRecipe(recipe({ agent: { retry: { overloaded: { maxRetires: 2 } } } }))).toThrow(/overloaded has unknown key "maxRetires"/);
+  });
+
+  test('validates overloaded fields numerically', () => {
+    expect(() => validateRecipe(recipe({ agent: { retry: { overloaded: { maxRetries: -2 } } } }))).toThrow(/overloaded\.maxRetries/);
+  });
+
   test('rejects negative or non-numeric counts and delays', () => {
     expect(() => validateRecipe(recipe({ agent: { retry: { maxRetries: -1 } } }))).toThrow(/agent\.retry\.maxRetries/);
     expect(() => validateRecipe(recipe({ agent: { retry: { retryDelayMs: '1s' } } }))).toThrow(/agent\.retry\.retryDelayMs/);
