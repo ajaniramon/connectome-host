@@ -41,7 +41,11 @@ function envFlag(value: string | undefined): boolean {
 export interface TurnTrigger {
   reason: string;
   source: string;
+  /** Routing locus of the turn (direct channel wakes set it). */
   channelId?: string;
+  /** Telemetry-only channel of a gate-batched wake (agent-framework ≥0.14:
+   *  InferenceRequest.wakeChannelId) — never a locus. */
+  wakeChannelId?: string;
   counterparty?: string;
 }
 
@@ -100,7 +104,7 @@ export function gateTelemetryHeaders(
     const t = activeTrigger();
     if (!t) return out;
     out['x-gate-origin'] = originClass(t);
-    out['x-gate-channel'] = attr(t.channelId);
+    out['x-gate-channel'] = attr(t.channelId ?? t.wakeChannelId);
     out['x-gate-counterparty'] = attr(t.counterparty);
     return out;
   };

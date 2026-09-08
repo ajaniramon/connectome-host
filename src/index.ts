@@ -970,10 +970,16 @@ async function main() {
   // -> null -> the origin trio is simply not sent.
   const activeTurnTrigger = (): TurnTrigger | null => {
     try {
-      const agents = appRefForDebt?.framework.getAllAgents() ?? [];
-      if (agents.length !== 1) return null;
-      const t = appRefForDebt?.framework.getActiveTurnTrigger(agents[0]!.name);
-      return t ? { reason: t.reason, source: t.source, channelId: t.channelId, counterparty: t.counterparty } : null;
+      const fw = appRefForDebt?.framework;
+      const agents = fw?.getAllAgents() ?? [];
+      // the primary is the resident whose turn we stamp; a 0.13 subconscious
+      // registers a second agent, which must not silence the stamp
+      const primary = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+        ?? (agents.length === 1 ? agents[0]!.name : undefined);
+      if (!primary) return null;
+      const t = fw?.getActiveTurnTrigger(primary) as
+        (ReturnType<NonNullable<typeof appRefForDebt>['framework']['getActiveTurnTrigger']> & { wakeChannelId?: string }) | undefined;
+      return t ? { reason: t.reason, source: t.source, channelId: t.channelId, wakeChannelId: t.wakeChannelId, counterparty: t.counterparty } : null;
     } catch {
       return null;
     }

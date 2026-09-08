@@ -56,6 +56,11 @@ describe('gateTelemetryHeaders', () => {
     expect(gateTelemetryHeaders(env, debt)!({ lane: 'stream' })).toEqual({ 'x-gate-debt-chunks': 7 });
   });
 
+  it('a gate-batched wake reports its telemetry channel (wakeChannelId) when it set no locus', () => {
+    const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'gate:debounce', source: 'gate', wakeChannelId: 'discord:1:2', counterparty: 'discord:user:42' }));
+    expect(fn!({ lane: 'stream' })).toEqual({ 'x-gate-debt-chunks': 7, 'x-gate-origin': 'event', 'x-gate-channel': 'discord:1:2', 'x-gate-counterparty': 'discord:user:42' });
+  });
+
   it('heartbeat wakes carry no channel or counterparty (null → dropped by membrane)', () => {
     const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'heartbeat:tick', source: 'heartbeat' }));
     expect(fn!({ lane: 'stream' })).toEqual({ 'x-gate-debt-chunks': 7, 'x-gate-origin': 'heartbeat', 'x-gate-channel': null, 'x-gate-counterparty': null });
