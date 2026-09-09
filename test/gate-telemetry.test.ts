@@ -6,7 +6,7 @@
  * value went to the vendor's default endpoint.
  */
 import { describe, expect, it } from 'bun:test';
-import { gateTelemetryHeaders, originClass } from '../src/gate-telemetry.js';
+import { gateTelemetryHeaders, originClass, stampedTrigger } from '../src/gate-telemetry.js';
 
 const debt = () => 7;
 
@@ -93,5 +93,32 @@ describe('gateTelemetryHeaders', () => {
   it('attributes are clipped to 120 visible-ASCII characters', () => {
     const fn = gateTelemetryHeaders(env, debt, () => ({ reason: 'mcpl:channel-incoming', source: 'discord', counterparty: 'x'.repeat(200) }));
     expect((fn!({ lane: 'stream' })['x-gate-counterparty'] as string).length).toBe(120);
+  });
+
+  describe('stampedTrigger — one adapter serves every agent', () => {
+    const trig = (name: string) => ({ reason: 'gate:debounce', source: 'gate', counterparty: `discord:user:${name}` });
+
+    it('single agent: its trigger', () => {
+      expect(stampedTrigger({ agents: ['scout'], triggerOf: () => trig('scout') })).toEqual(trig('scout'));
+    });
+
+    it('primary + idle subconscious: the primary\'s trigger', () => {
+      expect(stampedTrigger({ agents: ['scout', 'scout-sub'], primary: 'scout',
+        triggerOf: (n) => (n === 'scout' ? trig('scout') : null) })).toEqual(trig('scout'));
+    });
+
+    it('primary and subconscious both mid-turn: withhold — the hook cannot tell whose request it decorates', () => {
+      expect(stampedTrigger({ agents: ['scout', 'scout-sub'], primary: 'scout',
+        triggerOf: (n) => trig(n) })).toBeNull();
+    });
+
+    it('only the subconscious mid-turn: nothing (its request is not the primary\'s turn)', () => {
+      expect(stampedTrigger({ agents: ['scout', 'scout-sub'], primary: 'scout',
+        triggerOf: (n) => (n === 'scout-sub' ? trig('sub') : null) })).toBeNull();
+    });
+
+    it('several agents and no primary known: withhold', () => {
+      expect(stampedTrigger({ agents: ['a', 'b'], triggerOf: () => trig('a') })).toBeNull();
+    });
   });
 });

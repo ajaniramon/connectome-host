@@ -91,6 +91,29 @@ function attr(v: string | undefined): string | null {
   return t.slice(0, 120);
 }
 
+/**
+ * Which agent's turn may be stamped onto a request, given that ONE provider
+ * adapter — and therefore one header hook — serves every agent in the
+ * process (primary, subconscious, forks, ephemerals) and the hook cannot
+ * tell whose request it is decorating. Rule: stamp the primary's trigger
+ * only while the primary is the ONLY agent with a turn in flight; any other
+ * agent mid-turn → withhold (null), never guess. Debt is per agent, not per
+ * request, so it may always be read from the primary.
+ */
+export function stampedTrigger(view: {
+  agents: string[];
+  primary?: string | null;
+  triggerOf: (agent: string) => TurnTrigger | null | undefined;
+}): TurnTrigger | null {
+  const primary = view.primary ?? (view.agents.length === 1 ? view.agents[0] : undefined);
+  if (!primary) return null;
+  for (const a of view.agents) {
+    if (a !== primary && view.triggerOf(a)) return null;
+  }
+  const t = view.triggerOf(primary);
+  return t ?? null;
+}
+
 export function gateTelemetryHeaders(
   env: Record<string, string | undefined>,
   pendingDebtChunks: () => number | null,
