@@ -28,7 +28,7 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
-import { gateTelemetryHeaders, type TurnTrigger } from './gate-telemetry.js';
+import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
@@ -949,11 +949,22 @@ async function main() {
   // multi-agent process (whose debt would we even claim?), no strategy — the
   // header is simply not sent: an unstamped call is honest, a guessed one lies.
   let appRefForDebt: AppContext | null = null;
+  // The resident whose turn/debt we stamp. TODO(agent-framework ≥0.14): use a
+  // public getPrimaryAgentName() accessor instead of the private field read.
+  const primaryAgent = (): { name: string; agent: unknown } | null => {
+    const fw = appRefForDebt?.framework;
+    const agents = fw?.getAllAgents() ?? [];
+    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+      ?? (agents.length === 1 ? agents[0]!.name : undefined);
+    if (!name) return null;
+    const agent = agents.find((a) => a.name === name);
+    return agent ? { name, agent } : null;
+  };
   const pendingDebtChunks = (): number | null => {
     try {
-      const agents = appRefForDebt?.framework.getAllAgents() ?? [];
-      if (agents.length !== 1) return null;
-      const strategy = (agents[0] as unknown as {
+      const p = primaryAgent();
+      if (!p) return null;
+      const strategy = (p.agent as unknown as {
         getContextManager?: () => { getStrategy?: () => { getCompressionDebt?: () => unknown } };
       }).getContextManager?.()?.getStrategy?.();
       const d = strategy?.getCompressionDebt?.() as { pendingChunks?: unknown } | undefined;
@@ -970,10 +981,23 @@ async function main() {
   // -> null -> the origin trio is simply not sent.
   const activeTurnTrigger = (): TurnTrigger | null => {
     try {
-      const agents = appRefForDebt?.framework.getAllAgents() ?? [];
-      if (agents.length !== 1) return null;
-      const t = appRefForDebt?.framework.getActiveTurnTrigger(agents[0]!.name);
-      return t ? { reason: t.reason, source: t.source, channelId: t.channelId, counterparty: t.counterparty } : null;
+      const fw = appRefForDebt?.framework;
+      if (!fw) return null;
+      const agents = fw.getAllAgents();
+      // ONE adapter serves every agent in this process, so this hook cannot
+      // tell whose request it is decorating: stamp the primary's trigger only
+      // while no other agent (subconscious, fork, ephemeral) has a turn in
+      // flight — see stampedTrigger().
+      const t = stampedTrigger({
+        agents: agents.map((a) => a.name),
+        primary: primaryAgent()?.name,
+        triggerOf: (name) => {
+          const r = fw.getActiveTurnTrigger(name) as
+            (ReturnType<typeof fw.getActiveTurnTrigger> & { wakeChannelId?: string }) | undefined;
+          return r ? { reason: r.reason, source: r.source, channelId: r.channelId, wakeChannelId: r.wakeChannelId, counterparty: r.counterparty } : null;
+        },
+      });
+      return t;
     } catch {
       return null;
     }

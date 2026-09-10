@@ -41,7 +41,11 @@ function envFlag(value: string | undefined): boolean {
 export interface TurnTrigger {
   reason: string;
   source: string;
+  /** Routing locus of the turn (direct channel wakes set it). */
   channelId?: string;
+  /** Telemetry-only channel of a gate-batched wake (agent-framework ≥0.14:
+   *  InferenceRequest.wakeChannelId) — never a locus. */
+  wakeChannelId?: string;
   counterparty?: string;
 }
 
@@ -87,6 +91,29 @@ function attr(v: string | undefined): string | null {
   return t.slice(0, 120);
 }
 
+/**
+ * Which agent's turn may be stamped onto a request, given that ONE provider
+ * adapter — and therefore one header hook — serves every agent in the
+ * process (primary, subconscious, forks, ephemerals) and the hook cannot
+ * tell whose request it is decorating. Rule: stamp the primary's trigger
+ * only while the primary is the ONLY agent with a turn in flight; any other
+ * agent mid-turn → withhold (null), never guess. Debt is per agent, not per
+ * request, so it may always be read from the primary.
+ */
+export function stampedTrigger(view: {
+  agents: string[];
+  primary?: string | null;
+  triggerOf: (agent: string) => TurnTrigger | null | undefined;
+}): TurnTrigger | null {
+  const primary = view.primary ?? (view.agents.length === 1 ? view.agents[0] : undefined);
+  if (!primary) return null;
+  for (const a of view.agents) {
+    if (a !== primary && view.triggerOf(a)) return null;
+  }
+  const t = view.triggerOf(primary);
+  return t ?? null;
+}
+
 export function gateTelemetryHeaders(
   env: Record<string, string | undefined>,
   pendingDebtChunks: () => number | null,
@@ -100,7 +127,7 @@ export function gateTelemetryHeaders(
     const t = activeTrigger();
     if (!t) return out;
     out['x-gate-origin'] = originClass(t);
-    out['x-gate-channel'] = attr(t.channelId);
+    out['x-gate-channel'] = attr(t.channelId ?? t.wakeChannelId);
     out['x-gate-counterparty'] = attr(t.counterparty);
     return out;
   };
