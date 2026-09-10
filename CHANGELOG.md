@@ -6,6 +6,81 @@ release time — see [CONTRIBUTING.md](CONTRIBUTING.md#changelog).
 
 ## Unreleased
 
+## 0.8.1 — 2026-09-10
+
+### Added
+
+- Recipe `subconscious` block (tune-out, agent-framework#77): `enabled`,
+  `systemPrompt` (required — the subconscious's mode block), optional `name`,
+  `model`, `allowChannelSpeech`, `reAnchorFraction`. Validated at recipe load
+  (unknown fields refused by name) and passed through verbatim to
+  `FrameworkConfig.subconscious`; the framework owns the defaults. Requires
+  agent-framework with tune-out (#115).
+
+- Add validated recipe plumbing for Agent Framework's default-off `agent.toolWrapperProseGuard` containment boundary.
+
+### Changed
+
+- Gate telemetry reads `x-gate-channel` from the turn's routing locus or,
+  for gate-batched wakes that set none, from the framework's telemetry-only
+  `wakeChannelId` (agent-framework ≥0.14). On residents with a subconscious
+  the stamp now follows the primary (the exactly-one-agent guard had
+  silenced it), and — because one provider adapter serves every agent — the
+  origin trio is stamped only while the primary is the only agent with a
+  turn in flight; overlap withholds rather than misattributes. Compression
+  debt is read from the primary as well.
+
+### Fixed
+
+- Recipes' `agent.strategy.mergeMaxSourceSpanMessages` now reaches the Context
+  Manager (it was accepted but never passed through, so the CM default applied
+  regardless of the recipe). Also plumbs and validates the Context Manager's
+  `compressionSplitFallback`, `compressionSplitPlaceholder`,
+  `compressionSplitMaxCallsPerChunk` and `compressionSplitMaxCallsPer10Min`
+  keys (all default off / CM defaults).
+
+- Gate telemetry classifies EventGate-batched wakes (`gate:debounce`, source
+  `gate`) as origin `event` instead of passing the raw reason through.
+
+- Name-taking commands (`/checkpoint`, `/restore`, `/checkout`,
+  `/session switch`, `/session delete`) parse the rest of the line instead of
+  only the first token, so multi-word names round-trip with
+  `/session rename` instead of silently truncating (`/checkpoint my test
+  point` used to save a checkpoint named `my`).
+- `/session delete` requires `--confirm`: the bare command echoes exactly
+  which session matched (name, id, message count) before anything
+  irreversible happens. `/help` documents that switch/delete accept ids.
+- Head-moving commands (`/undo`, `/redo`, `/checkout`, `/restore`,
+  `/branchto`, `/newtopic`) are refused while a turn is in flight — moving
+  the head mid-stream committed the streaming reply onto the wrong branch,
+  detached from its request (orphaned Chronicle nodes), including when the
+  move came from a second client on the same session.
+- `/mcp add` on an existing server preserves its env vars and `toolPrefix`
+  (and reports the kept env keys); previously a command update silently
+  wiped the server's env, which only surfaced when the server next started
+  without its tokens.
+- Checkpoints are visible: `/branches` lists them alongside branches, and
+  bare `/checkpoint` lists existing checkpoints (matching bare `/restore`).
+- `/budget` displays small values exactly instead of flooring to `0k`
+  (`/budget 50` used to report "set to 0k" while rejecting `/budget 0`).
+- `/clear` clears the WebUI transcript view (client-side, like the TUI's
+  scrollback wipe) instead of appending a "(cleared)" line while clearing
+  nothing; `/help` and the headless reply now say what `/clear` actually
+  does — display only, history and context kept.
+
+- The WebUI HTTP surface answers honestly: unknown `/debug/*` paths (typos,
+  casing, trailing slashes) return a JSON 404 instead of the SPA shell with
+  a 200; missing `/assets/*` files return 404 instead of HTML (which
+  produced a blank page with a MIME error on stale bundle hashes); non-GET
+  methods get 405 with an `Allow` header. SPA client-side routes still fall
+  back to the shell.
+- The context-makeup panel's exact token count calls `count_tokens` with the
+  model the agent actually runs (provider/Bedrock prefixes normalized away)
+  instead of a hardcoded id that 404'd on every install and silently nulled
+  `exactTotalTokens`. `COUNT_TOKENS_MODEL` remains as an explicit override;
+  non-Anthropic models report `count_tokens_unsupported_model` instead of
+  counting against the wrong tokenizer.
+
 ## 0.8.0 — 2026-09-05
 
 ### Added
