@@ -1,0 +1,1 @@
+- Route ChatGPT subscription inference through Membrane's shared Responses adapter, preserving Codex app-server login, token refresh, endpoint configuration, and Fast mode controls in the host. Provider usage now declares the cache-inclusive convention and is normalized by Membrane.
