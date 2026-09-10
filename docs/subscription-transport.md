@@ -20,7 +20,7 @@ without forcing a token refresh.
 
 ## Companion dependency
 
-This PR pins Membrane commit `ce3192c5eacb43a13492062f38dae23fa9224b5d`
+This PR pins Membrane commit `28ea9ffde04758963742e76ad2338592df59e463`
 ([Membrane #74](https://github.com/antra-tess/membrane/pull/74)) so reviewers and
 CI install the actual shared transport. Both npm and Bun locks are included. An
 override keeps agent-framework and context-manager on the same Membrane copy;

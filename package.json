@@ -17,7 +17,7 @@
     "@animalabs/agent-framework": "^0.13.0",
     "@animalabs/chronicle": "^0.3.0",
     "@animalabs/context-manager": "^0.8.0",
-    "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#ce3192c5eacb43a13492062f38dae23fa9224b5d",
+    "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#28ea9ffde04758963742e76ad2338592df59e463",
     "@opentui/core": "^0.1.82"
   },
   "devDependencies": {
@@ -34,6 +34,6 @@
     "url": "https://github.com/anima-research/connectome-host/issues"
   },
   "overrides": {
-    "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#ce3192c5eacb43a13492062f38dae23fa9224b5d"
+    "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#28ea9ffde04758963742e76ad2338592df59e463"
   }
 }
