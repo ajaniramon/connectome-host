@@ -22,21 +22,13 @@ without forcing a token refresh.
 
 ## Companion dependency
 
-This PR pins Membrane commit `18a86e9eda277378acd982b07c7fe7c187721119`
-([Membrane #74](https://github.com/antra-tess/membrane/pull/74)) so reviewers and
-CI install the actual shared transport. Both npm and Bun locks are included. An
-override keeps agent-framework and context-manager on the same Membrane copy;
-otherwise Bun can retain an older transitive copy with separate error classes.
-The pin uses the public GitHub repository over HTTPS.
-
-Merge gate: merge and release Membrane #74 to npm first. Before merging this
-host PR, replace the direct dependency and override with that published version
-(or remove the override when both package managers deduplicate correctly),
-regenerate both lockfiles, and rerun the host tests. The git pin is for review
-only and must not reach a host npm release. It requires GitHub/git at install
-time; Bun also skips the git dependency's prepare build, leaving Node/TypeScript
-entrypoints unavailable unless built separately. This PR does not publish a
-release or predict a future version number.
+The shared transport ships in `@animalabs/membrane` 0.5.85
+([Membrane #74](https://github.com/antra-tess/membrane/pull/74), released
+2026-09-14). This host depends on `^0.5.85`; agent-framework and
+context-manager resolve the same copy through their own caret ranges, so no
+override is needed and both lockfiles carry the registry package. During review
+the branch temporarily pinned the PR-branch commit as a git dependency; that
+pin never reached a host release.
 
 [Membrane #75](https://github.com/antra-tess/membrane/pull/75) separately adds
 Anthropic's rotating-credential seam for issue #69. This OpenAI host migration

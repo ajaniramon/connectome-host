@@ -8,7 +8,7 @@
         "@animalabs/agent-framework": "^0.13.0",
         "@animalabs/chronicle": "^0.3.0",
         "@animalabs/context-manager": "^0.8.0",
-        "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#18a86e9eda277378acd982b07c7fe7c187721119",
+        "@animalabs/membrane": "^0.5.85",
         "@opentui/core": "^0.1.82",
       },
       "devDependencies": {
@@ -18,9 +18,6 @@
       },
     },
   },
-  "overrides": {
-    "@animalabs/membrane": "git+https://github.com/antra-tess/membrane.git#18a86e9eda277378acd982b07c7fe7c187721119",
-  },
   "packages": {
     "@animalabs/agent-framework": ["@animalabs/agent-framework@0.13.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/context-manager": "^0.8.0", "@animalabs/membrane": "^0.5.78", "chokidar": "^4.0.3", "discord.js": "^14.25.1", "ws": "^8.18.0" }, "bin": { "agent-framework-mcp": "dist/src/api/mcp-server.js", "agent-framework-recover": "dist/src/recovery/recover-cli.js" } }, "sha512-j4QY9pEjOHdmqnwyUPp4NU6fW1f5EHb3Lp+ygoAB3LKj2QjLITlglNFNuLqjRWtGiwwamSopcuqgbwHwAp0wyQ=="],
 
@@ -28,7 +25,7 @@
 
     "@animalabs/context-manager": ["@animalabs/context-manager@0.8.0", "", { "dependencies": { "@animalabs/chronicle": "^0.3.0", "@animalabs/membrane": "^0.5.69" } }, "sha512-lMYU+FazgSl6FFNig8N8Zjo6vqxn16j6H5GkYldS3R902nnUX4gjsqhup/yQDqrrOJuwSvpkrQBpnV8q2iOykA=="],
 
-    "@animalabs/membrane": ["@animalabs/membrane@github:antra-tess/membrane#18a86e9", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "antra-tess-membrane-18a86e9", "sha512-Rt345+gDW9NhrGiDWpXIGxu31mgSTHnx/gBnIyn4YrZm5crgnc3Cvk7hiO+xbvVdjngTwQLanuZ1p+44H46ABA=="],
+    "@animalabs/membrane": ["@animalabs/membrane@0.5.85", "", { "dependencies": { "@anthropic-ai/sdk": "^0.52.0" } }, "sha512-Ll215f62CZTB88dGe7p+9mQceMeVByXPpUUCHMQ7KLS7ZBmCE418s3bA7DUWIzm8ZPlT+fAc4pnMCbB5M9nEpw=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.52.0", "", { "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ=="],
 
