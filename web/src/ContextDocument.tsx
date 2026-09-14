@@ -25,9 +25,48 @@ const fmt = (n: number) => n.toLocaleString();
 const estTokens = (s: string) => Math.round(s.length / 3.6);
 const SUMMARY_LABELS = ['What do you remember', 'Context Manager'];
 
+type Block = { type?: string; text?: string; name?: string; input?: unknown; content?: unknown; is_error?: boolean; thinking?: string };
+
+const TOOL_INPUT_PREVIEW = 600;
+
+/** Render one content block as text. Every block type the API can put in a
+ *  message gets a visible form — a box whose blocks all map to '' is what an
+ *  operator reads as "empty context", which is never true. */
+function blockText(b: unknown): string {
+  if (!b || typeof b !== 'object') return String(b ?? '');
+  const blk = b as Block;
+  switch (blk.type) {
+    case 'text': return blk.text ?? '';
+    case 'image': return '[image]';
+    case 'thinking': return `[thinking · ${fmt((blk.thinking ?? '').length)} chars]`;
+    case 'redacted_thinking': return '[redacted thinking]';
+    case 'tool_use': {
+      let args = '';
+      try { args = JSON.stringify(blk.input ?? {}); } catch { args = String(blk.input); }
+      if (args.length > TOOL_INPUT_PREVIEW) args = `${args.slice(0, TOOL_INPUT_PREVIEW)}…`;
+      return `⚙ ${blk.name ?? 'tool'}(${args})`;
+    }
+    case 'tool_result': {
+      const inner = Array.isArray(blk.content) ? blk.content.map(blockText).join('') : String(blk.content ?? '');
+      return `${blk.is_error ? '✗ tool error' : '↳ tool result'}${inner ? `\n${inner}` : ' (empty)'}`;
+    }
+    default: return `[${blk.type ?? 'block'}]`;
+  }
+}
+
 function textOf(c: unknown): string {
-  if (Array.isArray(c)) return c.map((b) => (b && typeof b === 'object' && (b as { type?: string }).type === 'text' ? (b as { text: string }).text : (b && (b as { type?: string }).type === 'image' ? '[image]' : ''))).join('');
+  if (Array.isArray(c)) return c.map(blockText).join('\n');
   return String(c ?? '');
+}
+
+/** Coarse message kind for the box header: tool traffic gets labelled so a
+ *  tool-heavy stretch of context reads as what it is. */
+function kindOf(c: unknown): 'tool_use' | 'tool_result' | null {
+  if (!Array.isArray(c)) return null;
+  const types = new Set(c.map((b) => (b && typeof b === 'object' ? (b as Block).type : undefined)));
+  if (types.has('tool_result')) return 'tool_result';
+  if (types.has('tool_use')) return 'tool_use';
+  return null;
 }
 
 export function ContextDocument(props: { scope?: string; scrollRoot?: () => HTMLElement | undefined }) {
@@ -141,6 +180,7 @@ export function ContextDocument(props: { scope?: string; scrollRoot?: () => HTML
             const summary = isSummary(m);
             const who = m.participant ?? m.role ?? '?';
             const t = textOf(m.content);
+            const kind = kindOf(m.content);
             return (
               <>
                 <Show when={firstOfZone}>
@@ -150,7 +190,10 @@ export function ContextDocument(props: { scope?: string; scrollRoot?: () => HTML
                 </Show>
                 <div class={`rounded border px-3 py-2 ${summary ? 'border-cyan-900/60 bg-cyan-950/20' : 'border-neutral-800 bg-neutral-900/30'}`}>
                   <div class="flex items-center justify-between text-[10px] font-mono mb-1">
-                    <span class={summary ? 'text-cyan-400' : 'text-neutral-400'}>{summary ? '◆ summary' : who}</span>
+                    <span class={summary ? 'text-cyan-400' : 'text-neutral-400'}>
+                      {summary ? '◆ summary' : who}
+                      <Show when={!summary && kind}><span class="ml-2 text-neutral-600">{kind === 'tool_use' ? '⚙ tool call' : '↳ tool result'}</span></Show>
+                    </span>
                     <span class="text-neutral-600">~{fmt(estTokens(t))} tok</span>
                   </div>
                   <div class="whitespace-pre-wrap text-[13px] leading-relaxed text-neutral-300">{t.slice(0, 4000)}{t.length > 4000 ? '…' : ''}</div>
