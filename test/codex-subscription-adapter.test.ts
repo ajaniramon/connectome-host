@@ -67,3 +67,73 @@ describe('Codex host integration', () => {
     expect(endpoint).toBe('https://explicit.test/responses');
   });
 });
+
+for (const mode of ['subscription', 'api'] as const) {
+  for (const lane of ['complete', 'stream'] as const) {
+    test(`logging wrapper preserves disjoint Membrane usage (${mode}/${lane})`, async () => {
+      const { Membrane, OpenAIResponsesFormatter } = await import('@animalabs/membrane');
+      const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+      const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const dir = mkdtempSync(`${tmpdir()}/codex-usage-`);
+      try {
+        const data = { status: 'completed', model: 'gpt-5.4', output: [
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'hello' }] },
+        ], usage: { input_tokens: 100, output_tokens: 2, input_tokens_details: { cached_tokens: 80 } } };
+        globalThis.fetch = async (_url, init) => JSON.parse(String(init?.body)).stream
+          ? new Response(`data: ${JSON.stringify({ type: 'response.completed', response: data })}\n\n`)
+          : new Response(JSON.stringify(data));
+        const adapter = mode === 'subscription'
+          ? new CodexSubscriptionAdapter({ authProvider: { getAccessToken: async () => 'token' } })
+          : new OpenAIResponsesAPIAdapter({ apiKey: 'sk-fixture' });
+        const wrapped = new LoggingProviderAdapter(adapter, `${dir}/calls.jsonl`);
+        const membrane = new Membrane(wrapped, { formatter: new OpenAIResponsesFormatter() });
+        const normalized = { messages: [{ participant: 'user', content: [{ type: 'text' as const, text: 'hello' }] }], config: { model: 'gpt-5.4', maxTokens: 100 } };
+        const response = lane === 'complete' ? await membrane.complete(normalized) : await membrane.stream(normalized, { onChunk: () => {} });
+        // 2026-07-31 incident: adding cached tokens twice ratcheted calibration until the agent wedged.
+        expect(response.usage.inputTokens).toBe(20);
+        expect(response.usage.cacheReadTokens).toBe(80);
+        const log = JSON.parse(readFileSync(`${dir}/calls.jsonl`, 'utf8').trim());
+        expect(log.response.usage.inputTokens).toBe(100);
+        expect(log.response.usage.cacheConvention).toBe('cache-inclusive');
+        expect(log.provider).toBe(mode === 'subscription' ? 'openai-codex' : 'openai-responses-api');
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+}
+
+test('wrapped subscription maintenance calls keep participant attribution', async () => {
+  const { Membrane, OpenAIResponsesFormatter, NativeFormatter } = await import('@animalabs/membrane');
+  const { LoggingProviderAdapter } = await import('../src/logging-provider-wrapper.js');
+  let input: unknown;
+  globalThis.fetch = async (_url, init) => { input = JSON.parse(String(init?.body)).input; return completed(); };
+  const adapter = new LoggingProviderAdapter(new CodexSubscriptionAdapter({ authProvider: { getAccessToken: async () => 't' } }), '/dev/null');
+  const membrane = new Membrane(adapter, { formatter: new OpenAIResponsesFormatter() });
+  await membrane.complete({ messages: [
+    { participant: 'Alice', content: [{ type: 'text', text: 'first' }] },
+    { participant: 'Bob', content: [{ type: 'text', text: 'second' }] },
+  ], config: { model: 'gpt-5.4', maxTokens: 100 } }, { formatter: new NativeFormatter({ participantMode: 'multiuser' }) });
+  expect(JSON.stringify(input)).toContain('Alice: first');
+  expect(JSON.stringify(input)).toContain('Bob: second');
+  expect(adapter.requiresNativeResponsesInput).toBe(false);
+});
+
+test('a forced refresh waits behind an ordinary acquisition rather than joining it', async () => {
+  const { CodexAppServerAuth } = await import('../src/codex-subscription-adapter.js');
+  const auth = new CodexAppServerAuth();
+  const flags: boolean[] = [];
+  let release!: (token: string) => void;
+  // Only the app-server exchange is stubbed; exercise real acquisition coordination.
+  (auth as any).authenticate = (refresh: boolean) => {
+    flags.push(refresh);
+    return refresh ? Promise.resolve('fresh') : new Promise<string>(resolve => { release = resolve; });
+  };
+  const ordinary = auth.getAccessToken(false);
+  const forced = auth.getAccessToken(true);
+  const secondForced = auth.getAccessToken(true);
+  release('stale');
+  expect(await ordinary).toBe('stale');
+  expect(await forced).toBe('fresh');
+  expect(await secondForced).toBe('fresh');
+  expect(flags).toEqual([false, true]);
+});

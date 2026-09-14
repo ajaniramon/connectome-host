@@ -68,6 +68,7 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   private waiters = new Set<NotificationWaiter>();
   private startPromise: Promise<void> | null = null;
   private authPromise: Promise<string> | null = null;
+  private authIsRefresh = false;
   private stderrTail = '';
   private accountId: string | undefined;
 
@@ -82,7 +83,14 @@ export class CodexAppServerAuth implements CodexAuthProvider {
   }
 
   async getAccessToken(forceRefresh = false): Promise<string> {
-    if (this.authPromise) return this.authPromise;
+    if (this.authPromise) {
+      if (!forceRefresh || this.authIsRefresh) return this.authPromise;
+      // A 401 refresh cannot be satisfied by an unrelated stale disk read.
+      // Wait for it, then coalesce concurrent refresh callers onto one refresh.
+      await this.authPromise.catch(() => {});
+      return this.getAccessToken(true);
+    }
+    this.authIsRefresh = forceRefresh;
     this.authPromise = this.authenticate(forceRefresh).finally(() => {
       this.authPromise = null;
     });
@@ -319,6 +327,7 @@ export interface CodexSubscriptionAdapterConfig extends CodexAppServerAuthConfig
 
 /** Host-owned login and disposal; all Responses transport behavior lives in Membrane. */
 export class CodexSubscriptionAdapter extends OpenAIResponsesAPIAdapter {
+  override readonly name = 'openai-codex';
   private readonly auth: CodexAuthProvider;
 
   constructor(config: CodexSubscriptionAdapterConfig = {}) {
