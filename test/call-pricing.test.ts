@@ -80,6 +80,19 @@ describe('Anthropic per-call pricing', () => {
     expect(fable51?.rates.cacheReadPerMillion).toBeCloseTo(0.25, 9);
   });
 
+  test('Mythos 5.1 reads from cache at 0.025x too, and Mythos 5 still at 0.1x', () => {
+    // the pricing page's footnote names both 5.1 models; the prefix order is
+    // pinned the same way the Fable pair is, so 'claude-mythos-5' cannot
+    // swallow 'claude-mythos-5-1' first
+    const mythos51 = priceAnthropicCall('claude-mythos-5-1', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    const mythos5 = priceAnthropicCall('claude-mythos-5', timestamp, usage({ cacheReadTokens: 1_000_000 }));
+    expect(mythos51?.cacheRead).toBeCloseTo(0.25, 9);
+    expect(mythos51?.rates.cacheReadPerMillion).toBeCloseTo(0.25, 9);
+    expect(mythos5?.cacheRead).toBeCloseTo(1, 9);
+    expect(mythos51?.rates.inputPerMillion).toBe(10);
+    expect(mythos51?.rates.outputPerMillion).toBe(50);
+  });
+
   test('the Fable 5.1 discount applies to reads only, not to input or writes', () => {
     const cost = priceAnthropicCall('claude-fable-5-1', timestamp, usage({
       inputTokens: 1_000_000,

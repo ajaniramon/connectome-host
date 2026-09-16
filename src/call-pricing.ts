@@ -90,12 +90,14 @@ export function priceAnthropicCall(
 }
 
 function anthropicBaseRate(model: string, timestamp: string): BaseRate | undefined {
-  // Fable 5.1 first: its prefix also matches the Fable 5 test below, and it is
-  // the one model that reads from cache at 0.025x rather than 0.1x. Whether
-  // Mythos 5.1 shares that rate is unconfirmed, so it keeps the default —
-  // overcharging a figure we label "billing" is the safer direction to be
-  // wrong in, and the exception is one line to add once it is confirmed.
-  if (starts(model, 'claude-fable-5-1')) return rate(10, 50, 0.025);
+  // The 5.1 pair first: their prefixes also match the Fable 5 / Mythos 5 test
+  // below, and they are the two models that read from cache at 0.025x rather
+  // than 0.1x. The pricing page's footnote on the cache-hit column: "Cache
+  // hits and refreshes on Claude Fable 5.1 and Claude Mythos 5.1 are priced
+  // at 0.025x the base input price. All other models use the standard 0.1x
+  // multiplier." (platform.claude.com/docs/en/about-claude/pricing, read
+  // 2026-09-16; the prompt-caching section repeats it.)
+  if (starts(model, 'claude-fable-5-1', 'claude-mythos-5-1')) return rate(10, 50, 0.025);
 
   // Fable 5 and Mythos 5 share pricing.
   if (starts(model, 'claude-fable-5', 'claude-mythos-5')) return rate(10, 50);
