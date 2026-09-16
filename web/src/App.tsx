@@ -1145,6 +1145,9 @@ export function App() {
         },
         setHostMode: (hm) => { if (hm) onHostMode(hm); else setHostMode(null); },
         requestHostMode: () => { if (features().has('quiesce')) wire.send({ type: 'request-host-mode' }); },
+        onTurnSettled: () => {
+          if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
+        },
         onSurgeryResult,
         setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
         onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
@@ -1646,6 +1649,8 @@ interface HandlerHooks {
   setHostMode: (hostMode: HostModeSnapshot | null) => void;
   /** Ask the server for a fresh host-mode snapshot (after host:* traces). */
   requestHostMode: () => void;
+  /** A turn ended — refresh host mode if a quiesce was still draining. */
+  onTurnSettled: () => void;
   onSurgeryResult: (result: SurgeryResultMessage) => void;
   setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
   /** An operator:action trace landed — refresh the log if it is on screen. */
@@ -1711,6 +1716,9 @@ function handleServerMessage(
         case 'inference:completed':
         case 'inference:failed':
           hooks.finishStream();
+          // A quiesce that was still draining may have just settled; the
+          // framework emits no trace for "drained", so re-pull the snapshot.
+          hooks.onTurnSettled();
           return;
         case 'inference:tool_calls_yielded': {
           const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];

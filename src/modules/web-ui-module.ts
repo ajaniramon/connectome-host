@@ -1487,10 +1487,13 @@ export class WebUiModule implements Module {
     const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
     if (!fw || typeof fw.getHostModeStatus !== 'function') return null;
     try {
+      // agent-framework HostModeStatus (#122): { quiesced, drained, reason?,
+      // since?, activeTurns, gatedRequests, backgroundScripts }. A quiesce
+      // that is still draining turns reads as 'quiescing'.
       const s = (fw.getHostModeStatus() ?? {}) as Record<string, unknown>;
       const mode = typeof s.mode === 'string' ? s.mode
-        : typeof s.state === 'string' ? s.state
-        : s.quiesced === true ? 'quiesced' : 'serving';
+        : s.quiesced === true ? (s.drained === false ? 'quiescing' : 'quiesced')
+        : 'serving';
       return {
         mode,
         ...(typeof s.since === 'number' ? { since: s.since } : {}),
@@ -1596,10 +1599,12 @@ export class WebUiModule implements Module {
     }
     const requester = this.requesterFor(client);
     const reason = verb === 'quiesce' ? (req as HostQuiesceMessage).reason?.trim() || undefined : undefined;
-    const requestedBy = `${requester.name ?? 'operator'} (${requester.via})`;
     try {
-      if (verb === 'quiesce') await fw.quiesce!({ ...(reason ? { reason } : {}), requestedBy });
-      else await fw.resume!({ requestedBy });
+      // quiesce({reason?, timeoutMs?, abandon?}) waits for in-flight turns to
+      // drain (up to its timeout); resume({force?}) re-runs the per-agent
+      // feasibility gate and throws ResumeBlockedError with verdicts.
+      if (verb === 'quiesce') await fw.quiesce!(reason ? { reason } : {});
+      else await fw.resume!({});
       const hostMode = this.hostModeSnapshot();
       fw.recordOperatorAction?.({
         kind: verb,
@@ -1610,7 +1615,18 @@ export class WebUiModule implements Module {
       if (hostMode) this.send(client, { type: 'host-mode', corrId: req.corrId, hostMode });
       this.broadcastHostMode();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      let message = err instanceof Error ? err.message : String(err);
+      // ResumeBlockedError: say which agent's context would not fit and why,
+      // not just "blocked".
+      const verdicts = (err as { verdicts?: unknown } | null)?.verdicts;
+      if (Array.isArray(verdicts) && verdicts.length > 0) {
+        const lines = verdicts.map((v) => {
+          const vv = v as { agentName?: string; preview?: { reason?: string; transitionReason?: string; transition?: string } };
+          const why = vv.preview?.reason ?? vv.preview?.transitionReason ?? vv.preview?.transition ?? 'not feasible';
+          return `${vv.agentName ?? '?'}: ${why}`;
+        });
+        message = `${message} — ${lines.join('; ')}`;
+      }
       fw.recordOperatorAction?.({ kind: verb, requester, ...(reason ? { note: reason } : {}), error: message });
       this.send(client, { type: 'error', corrId: req.corrId, message: `${verb} failed: ${message}` });
       this.broadcastHostMode();
