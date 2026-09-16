@@ -28,7 +28,7 @@ import {
 } from '@animalabs/membrane';
 import { LoggingAnthropicAdapter } from './logging-adapter.js';
 import { LoggingProviderAdapter } from './logging-provider-wrapper.js';
-import { gateTelemetryHeaders } from './gate-telemetry.js';
+import { gateTelemetryHeaders, stampedTrigger, type TurnTrigger } from './gate-telemetry.js';
 import { LoggingBedrockAdapter } from './logging-bedrock-adapter.js';
 import { CodexSubscriptionAdapter } from './codex-subscription-adapter.js';
 import { CallLedger } from './call-ledger.js';
@@ -510,6 +510,9 @@ agents: [agentConfig],
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
+    // Tune-out's subconscious resident (agent-framework#77) — recipe opt-in,
+    // passed through verbatim; the framework owns the defaults.
+    ...(recipe.subconscious ? { subconscious: recipe.subconscious } : {}),
   });
 
   // Wire post-creation hooks
@@ -946,11 +949,22 @@ async function main() {
   // multi-agent process (whose debt would we even claim?), no strategy — the
   // header is simply not sent: an unstamped call is honest, a guessed one lies.
   let appRefForDebt: AppContext | null = null;
+  // The resident whose turn/debt we stamp. TODO(agent-framework ≥0.14): use a
+  // public getPrimaryAgentName() accessor instead of the private field read.
+  const primaryAgent = (): { name: string; agent: unknown } | null => {
+    const fw = appRefForDebt?.framework;
+    const agents = fw?.getAllAgents() ?? [];
+    const name = (fw as unknown as { primaryAgentName?: string } | undefined)?.primaryAgentName
+      ?? (agents.length === 1 ? agents[0]!.name : undefined);
+    if (!name) return null;
+    const agent = agents.find((a) => a.name === name);
+    return agent ? { name, agent } : null;
+  };
   const pendingDebtChunks = (): number | null => {
     try {
-      const agents = appRefForDebt?.framework.getAllAgents() ?? [];
-      if (agents.length !== 1) return null;
-      const strategy = (agents[0] as unknown as {
+      const p = primaryAgent();
+      if (!p) return null;
+      const strategy = (p.agent as unknown as {
         getContextManager?: () => { getStrategy?: () => { getCompressionDebt?: () => unknown } };
       }).getContextManager?.()?.getStrategy?.();
       const d = strategy?.getCompressionDebt?.() as { pendingChunks?: unknown } | undefined;
@@ -961,7 +975,35 @@ async function main() {
     }
   };
 
-  const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks);
+  // Why the turn in progress fired (heartbeat / a channel message by whom /
+  // operator), read from the framework's active-turn trigger. Same guards as
+  // the debt getter: no framework or several agents
+  // -> null -> the origin trio is simply not sent.
+  const activeTurnTrigger = (): TurnTrigger | null => {
+    try {
+      const fw = appRefForDebt?.framework;
+      if (!fw) return null;
+      const agents = fw.getAllAgents();
+      // ONE adapter serves every agent in this process, so this hook cannot
+      // tell whose request it is decorating: stamp the primary's trigger only
+      // while no other agent (subconscious, fork, ephemeral) has a turn in
+      // flight — see stampedTrigger().
+      const t = stampedTrigger({
+        agents: agents.map((a) => a.name),
+        primary: primaryAgent()?.name,
+        triggerOf: (name) => {
+          const r = fw.getActiveTurnTrigger(name) as
+            (ReturnType<typeof fw.getActiveTurnTrigger> & { wakeChannelId?: string }) | undefined;
+          return r ? { reason: r.reason, source: r.source, channelId: r.channelId, wakeChannelId: r.wakeChannelId, counterparty: r.counterparty } : null;
+        },
+      });
+      return t;
+    } catch {
+      return null;
+    }
+  };
+
+  const gateTelemetryDynamicHeaders = gateTelemetryHeaders(process.env, pendingDebtChunks, activeTurnTrigger);
 
   const adapter = provider === 'openai-responses'
     ? new LoggingProviderAdapter(
@@ -1005,11 +1047,7 @@ async function main() {
           // configured base URL, so the stamp can only ever go to a
           // gateway the operator has declared — never to the vendor's
           // default endpoint (review finding on the first wiring).
-          // Cast note: @animalabs/membrane on npm (0.5.80) predates the
-          // dynamicHeaders field (antra-tess/membrane#65); drop the cast when
-          // the release lands. Harmless either way — an older membrane
-          // ignores unknown config keys.
-          ...(gateTelemetryDynamicHeaders ? ({ dynamicHeaders: gateTelemetryDynamicHeaders } as object) : {}),
+          ...(gateTelemetryDynamicHeaders ? { dynamicHeaders: gateTelemetryDynamicHeaders } : {}),
           // Hold this agent's cached prefix warm across idle gaps. Only fires
           // when the entry is actually near expiry, so a busy agent costs
           // nothing; only the 1h-TTL primary lane is eligible (the module

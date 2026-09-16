@@ -62,6 +62,14 @@ export interface RecipeStrategy {
   compressionMergeSourceOnly?: boolean;
   /** Preserve ordinary merge retries, then use target-only on the final attempt. */
   compressionMergeSourceOnlyFallback?: boolean;
+  /** Context Manager split-stitch L1 fallback rung (default off). */
+  compressionSplitFallback?: boolean;
+  /** Allow a single-message placeholder inside a split-stitched L1 (default off). */
+  compressionSplitPlaceholder?: boolean;
+  /** Split-stitch: max sub-calls per chunk (default 40). */
+  compressionSplitMaxCallsPerChunk?: number;
+  /** Split-stitch: max sub-calls per strategy instance per 10-minute in-memory window (default 80). */
+  compressionSplitMaxCallsPer10Min?: number;
   /** Token budget for prior recall-pair context in compression/merge
    * requests (Context Manager `compressionRecallBudgetTokens`). */
   compressionRecallBudgetTokens?: number;
@@ -69,6 +77,7 @@ export interface RecipeStrategy {
   recallHeaderTemplate?: string;
   targetChunkTokens?: number;
   mergeThreshold?: number;
+  mergeMaxSourceSpanMessages?: number;
   summaryTargetTokens?: number;
   /** Standing production target: keep the summary forest deep enough to fit
    *  this budget, enabling a later live-budget descent with no fold-storm and
@@ -250,6 +259,8 @@ export interface RecipeAgent {
    * Default 'locus'.
    */
   proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+  /** Default-off containment of whole-response prose wrappers for known tools. */
+  toolWrapperProseGuard?: boolean;
   /**
    * Extra Anthropic beta flags sent as the `anthropic-beta` header on every
    * request (e.g. `["context-1m-2025-08-07"]` for the 1M context window on
@@ -872,6 +883,30 @@ export interface RecipeCodeExecution {
 }
 
 /**
+ * The subconscious resident (agent-framework FrameworkConfig.subconscious,
+ * issue agent-framework#77 — tune-out): a persistent same-model side-agent
+ * that receives traffic from channels the resident has tuned out and
+ * reports to them in its own voice. Passed through verbatim; the framework
+ * owns the defaults (name `Subconscious`, model = the resident's).
+ */
+export interface RecipeSubconscious {
+  /** Master switch. Without it the `tune_out` tool is not offered. */
+  enabled: boolean;
+  /** Registry + participant name (default 'Subconscious'). */
+  name?: string;
+  /** Model id (default: the resident's model — same-model side-process). */
+  model?: string;
+  /** The voice/criteria mode block: report-shaped, second person toward the
+   *  resident. Co-authored with the resident; canary before fleet use. */
+  systemPrompt: string;
+  /** Allow `speak_in_channel` (default false until the voice block has
+   *  passed its canary). */
+  allowChannelSpeech?: boolean;
+  /** WindowedPassthroughStrategy re-anchor fraction in (0, 1] (default 0.5). */
+  reAnchorFraction?: number;
+}
+
+/**
  * Per-channel conversation routing (agent-framework ConversationRouter):
  * the recipe's agent becomes a dormant "trunk" template, and qualifying
  * incoming channel messages spawn per-channel fork agents seeded from the
@@ -920,6 +955,8 @@ export interface Recipe {
   codeExecution?: RecipeCodeExecution;
   /** Per-channel conversation routing — fork-per-channel from this agent. */
   conversations?: RecipeConversations;
+  /** Tune-out's subconscious resident (agent-framework#77). */
+  subconscious?: RecipeSubconscious;
 }
 
 // ---------------------------------------------------------------------------
@@ -1313,6 +1350,10 @@ export function validateRecipe(raw: unknown): Recipe {
     throw new Error(`Recipe agent.proseRouting must be 'locus', 'explicit', 'hybrid', or 'disabled', got ${JSON.stringify(agent.proseRouting)}.`);
   }
 
+  if (agent.toolWrapperProseGuard !== undefined && typeof agent.toolWrapperProseGuard !== 'boolean') {
+    throw new Error(`Recipe agent.toolWrapperProseGuard must be a boolean, got ${JSON.stringify(agent.toolWrapperProseGuard)}.`);
+  }
+
   if (agent.timezone !== undefined) {
     if (typeof agent.timezone !== 'string' || !agent.timezone.trim()) {
       throw new Error('Recipe agent.timezone must be a non-empty IANA time zone string.');
@@ -1612,9 +1653,17 @@ export function validateRecipe(raw: unknown): Recipe {
       'compressionSourceOnlyFallback',
       'compressionMergeSourceOnly',
       'compressionMergeSourceOnlyFallback',
+      'compressionSplitFallback',
+      'compressionSplitPlaceholder',
     ] as const) {
       if (strategy[key] !== undefined && typeof strategy[key] !== 'boolean') {
         throw new Error(`Recipe agent.strategy.${key} must be a boolean.`);
+      }
+    }
+    for (const key of ['compressionSplitMaxCallsPerChunk', 'compressionSplitMaxCallsPer10Min'] as const) {
+      const value = strategy[key];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`Recipe agent.strategy.${key} must be a positive safe integer.`);
       }
     }
     if (
@@ -2048,6 +2097,46 @@ export function validateRecipe(raw: unknown): Recipe {
     for (const k of ['toolCallTimeoutMs', 'scriptTimeoutMs', 'idleReclaimMs'] as const) {
       if (ce[k] !== undefined && (typeof ce[k] !== 'number' || (ce[k] as number) < 0)) {
         throw new Error(`Recipe codeExecution.${k} must be a non-negative number.`);
+      }
+    }
+  }
+
+  if (obj.subconscious !== undefined) {
+    if (!obj.subconscious || typeof obj.subconscious !== 'object' || Array.isArray(obj.subconscious)) {
+      throw new Error('Recipe subconscious must be an object.');
+    }
+    const sub = obj.subconscious as Record<string, unknown>;
+    const allowedSubconsciousKeys = new Set([
+      'enabled', 'name', 'model', 'systemPrompt', 'allowChannelSpeech', 'reAnchorFraction',
+    ]);
+    for (const key of Object.keys(sub)) {
+      if (!allowedSubconsciousKeys.has(key)) {
+        throw new Error(
+          `Recipe subconscious has unknown field ${JSON.stringify(key)} ` +
+          `(expected one of: ${[...allowedSubconsciousKeys].join(', ')}).`,
+        );
+      }
+    }
+    if (typeof sub.enabled !== 'boolean') {
+      throw new Error('Recipe subconscious.enabled must be a boolean.');
+    }
+    // The mode block is the subconscious's whole character; an enabled
+    // subconscious without one would run on an empty system prompt.
+    if (typeof sub.systemPrompt !== 'string' || !sub.systemPrompt.trim()) {
+      throw new Error('Recipe subconscious.systemPrompt must be a non-empty string.');
+    }
+    for (const k of ['name', 'model'] as const) {
+      if (sub[k] !== undefined && (typeof sub[k] !== 'string' || !(sub[k] as string).trim())) {
+        throw new Error(`Recipe subconscious.${k} must be a non-empty string.`);
+      }
+    }
+    if (sub.allowChannelSpeech !== undefined && typeof sub.allowChannelSpeech !== 'boolean') {
+      throw new Error('Recipe subconscious.allowChannelSpeech must be a boolean.');
+    }
+    if (sub.reAnchorFraction !== undefined) {
+      const f = sub.reAnchorFraction;
+      if (typeof f !== 'number' || !(f > 0 && f <= 1)) {
+        throw new Error('Recipe subconscious.reAnchorFraction must be a number in (0, 1].');
       }
     }
   }
