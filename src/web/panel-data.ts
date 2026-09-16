@@ -53,6 +53,7 @@ export const PANEL_OPS = [
   'context-preview',
   'context-maintenance',
   'debug-context',
+  'media',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -138,6 +139,8 @@ export async function runPanelOp(
         return { ok: true, data: buildContextMaintenance(app) };
       case 'debug-context':
         return { ok: true, data: await buildDebugContext(app, resolveAgent(app, params.agent), params) };
+      case 'media':
+        return { ok: true, data: buildMediaBlock(app, resolveAgent(app, params.agent), params) };
       default:
         return { ok: false, error: `unknown panel op: ${op}`, status: 400 };
     }
@@ -157,6 +160,83 @@ function requireAgent(app: PanelAppRef, agentName: string): NonNullable<ReturnTy
   const agent = app.framework.getAgent(agentName);
   if (!agent) throw new PanelError(`Agent not found: ${agentName}`, 404);
   return agent;
+}
+
+// ---------------------------------------------------------------------------
+// Media — one inline image block, served lazily
+// ---------------------------------------------------------------------------
+
+interface MediaReadableCm {
+  getMessage(id: never): { content?: ReadonlyArray<unknown> } | null;
+  getMessageCount(): number;
+  getMessageWindow(
+    offset: number,
+    limit: number,
+    opts?: { resolveBlobs?: boolean },
+  ): { messages: Array<{ id?: unknown; content?: ReadonlyArray<unknown> }>; startIndex: number };
+}
+
+const MEDIA_SCAN_WINDOW = 500;
+
+/** The message's content with blobs inflated. `getMessage` normally resolves
+ *  blobs; if a facade hands back `blob_ref` placeholders, fall back to a
+ *  windowed read of just that slot (tail-first scan — media requests are
+ *  almost always for recent messages). */
+function readInflatedContent(cm: MediaReadableCm, messageId: string): ReadonlyArray<unknown> | null {
+  const direct = cm.getMessage(messageId as never);
+  if (!direct) return null;
+  const content = direct.content ?? [];
+  const hasBlobRef = content.some((b) => (b as { type?: string } | null)?.type === 'blob_ref');
+  if (!hasBlobRef) return content;
+  const total = cm.getMessageCount();
+  for (let end = total; end > 0; end -= MEDIA_SCAN_WINDOW) {
+    const start = Math.max(0, end - MEDIA_SCAN_WINDOW);
+    const win = cm.getMessageWindow(start, end - start, { resolveBlobs: false });
+    const k = win.messages.findIndex((m) => String(m.id) === messageId);
+    if (k >= 0) {
+      return cm.getMessageWindow(win.startIndex + k, 1, { resolveBlobs: true }).messages[0]?.content ?? content;
+    }
+  }
+  return content;
+}
+
+/**
+ * Resolve one inline image block by store message id + block path
+ * (`<blockIndex>` or `<blockIndex>.<innerIndex>` for an image nested in a
+ * tool_result). Returns the raw base64 + media type; the HTTP layer turns it
+ * into bytes. Only `image/*` is served — documents/audio are not viewer
+ * content.
+ */
+export function buildMediaBlock(
+  app: PanelAppRef,
+  agentName: string,
+  params: Record<string, unknown>,
+): { mediaType: string; base64: string } {
+  const agent = requireAgent(app, agentName);
+  const messageId = typeof params.messageId === 'string' ? params.messageId : '';
+  const path = typeof params.path === 'string' ? params.path : '';
+  if (!messageId || !/^\d{1,4}(\.\d{1,4})?$/.test(path)) {
+    throw new PanelError('media: messageId and block path (<n> or <n>.<m>) are required', 400);
+  }
+  const cm = agent.getContextManager() as unknown as MediaReadableCm;
+  const content = readInflatedContent(cm, messageId);
+  if (!content) throw new PanelError(`message not found on the active branch: ${messageId}`, 404);
+  const [outer, inner] = path.split('.').map(Number);
+  let block = content[outer] as Record<string, unknown> | undefined;
+  if (inner !== undefined) {
+    const nested = block?.type === 'tool_result' && Array.isArray(block.content) ? block.content : null;
+    block = nested ? (nested[inner] as Record<string, unknown> | undefined) : undefined;
+  }
+  const b = block as
+    | { type?: string; source?: { type?: string; data?: unknown; mediaType?: unknown } }
+    | undefined;
+  if (!b || b.type !== 'image') throw new PanelError(`no image block at ${path}`, 404);
+  const src = b.source;
+  if (src?.type !== 'base64' || typeof src.data !== 'string' || typeof src.mediaType !== 'string') {
+    throw new PanelError('image is not inline (reference-only or stripped)', 404);
+  }
+  if (!src.mediaType.startsWith('image/')) throw new PanelError(`not an image media type: ${src.mediaType}`, 415);
+  return { mediaType: src.mediaType, base64: src.data };
 }
 
 // ---------------------------------------------------------------------------

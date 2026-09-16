@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show } from 'solid-js';
+import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from 'solid-js';
 import { createStore, produce } from 'solid-js/store';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -29,7 +29,18 @@ import {
   type PerAgentCost,
   type CallLedgerSnapshot,
   type BranchRow,
+  type HostModeSnapshot,
+  type SurgeryResultMessage,
+  type OperatorLogEntryWire,
 } from '@conhost/web/protocol';
+import {
+  Lightbox,
+  MediaView,
+  HostModeToggle,
+  SurgeryDialog,
+  SelectionBar,
+  type SurgeryRequest,
+} from './Surgery';
 
 /** Client-side block: the wire MessageBlock plus live-stream bookkeeping. */
 type UiBlock =
@@ -43,7 +54,7 @@ type UiBlock =
       durationMs?: number;
     }
   | { kind: 'tool_result'; toolUseId: string; text: string; isError?: boolean; truncated?: boolean }
-  | { kind: 'media'; mediaType: string }
+  | { kind: 'media'; mediaType: string; ref?: string }
   /** Client-only: a tool call being written live (raw partial JSON from
    *  blockType 'tool_call' token deltas). Replaced by the parsed tool_use
    *  blocks when inference:tool_calls_yielded lands. */
@@ -51,6 +62,9 @@ type UiBlock =
 
 interface Message {
   id: string;
+  /** Chronicle store id — present only for canonical (server-sourced)
+   *  messages; the target of rollback / suppress. */
+  storeId?: string;
   participant: 'user' | 'assistant' | 'system' | 'tool' | 'command' | 'trigger';
   text: string;
   /** Ordered content blocks — present on server-sourced and streamed
@@ -83,6 +97,7 @@ const streamLineId = (): number => ++streamIdSeq;
 function entryToMessage(e: WelcomeMessageEntry): Message {
   return {
     id: e.id ?? nextMessageId(),
+    ...(e.id ? { storeId: e.id } : {}),
     participant: e.participant,
     text: e.text,
     blocks: (e.blocks ?? []) as UiBlock[],
@@ -291,6 +306,142 @@ export function App() {
 
   const checkoutBranch = (name: string): void => {
     wire.send({ type: 'command', command: `/checkout ${name}` });
+  };
+
+  // ---------------------------------------------------------------------------
+  // Live surgery (rollback / suppress), host quiesce, operator log. Every
+  // affordance is gated on `welcome.features` so an older host shows nothing.
+  // ---------------------------------------------------------------------------
+
+  const features = (): Set<string> => new Set(welcome()?.features ?? []);
+  const isObserver = (): boolean => wire.observerState() === 'observer';
+  const canRollback = (): boolean => features().has('rollback') && !isObserver();
+  const canSuppress = (): boolean => features().has('suppress') && !isObserver();
+  const canQuiesce = (): boolean => features().has('quiesce') && !isObserver();
+
+  const [hostMode, setHostMode] = createSignal<HostModeSnapshot | null>(null);
+  const [hostModeBusy, setHostModeBusy] = createSignal(false);
+  const [surgery, setSurgery] = createSignal<SurgeryRequest | null>(null);
+  const [surgeryPending, setSurgeryPending] = createSignal(false);
+  const [surgeryResult, setSurgeryResult] = createSignal<SurgeryResultMessage | null>(null);
+  /** Set when the operator chose "quiesce, then retry": the pending surgery
+   *  is resent as soon as the host reports `quiesced`. */
+  let retryAfterQuiesce: { note: string } | null = null;
+  const [selecting, setSelecting] = createSignal(false);
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  const [opLog, setOpLog] = createSignal<OperatorLogEntryWire[]>([]);
+  const [opLogPath, setOpLogPath] = createSignal<string | undefined>(undefined);
+  const [opLogLoading, setOpLogLoading] = createSignal(false);
+
+  const previewOf = (m: Message): string => {
+    const who = m.participant === 'assistant' ? (welcome()?.agents[0]?.name ?? 'assistant') : m.participant;
+    const body = (m.text || (m.blocks ?? []).map((b) => b.kind === 'tool_use' ? `⚙ ${b.name}` : b.kind === 'media' ? `📎 ${b.mediaType}` : '').filter(Boolean).join(' ')).replace(/\s+/g, ' ').trim();
+    return `${who}: ${body.slice(0, 90)}${body.length > 90 ? '…' : ''}`;
+  };
+
+  /** Rollback so `storeId` becomes the tail. `preview` is used when the
+   *  message is not in the loaded chat window (context-document boxes). */
+  const beginRollback = (storeId: string, preview?: string): void => {
+    if (!canRollback()) return;
+    const idx = messages.findIndex((m) => m.storeId === storeId);
+    const after = idx >= 0 ? messages.slice(idx + 1).filter((m) => m.storeId) : [];
+    setSurgeryResult(null);
+    setSurgery({
+      op: 'rollback',
+      messageIds: [storeId],
+      previews: [
+        `new tail → ${idx >= 0 ? previewOf(messages[idx]) : (preview ?? storeId)}`,
+        ...after.slice(0, 12).map((m) => `leaves: ${previewOf(m)}`),
+        ...(after.length > 12 ? [`… and ${after.length - 12} more`] : []),
+      ],
+      ...(idx >= 0 ? { affected: after.length } : {}),
+    });
+  };
+
+  const toggleSelected = (storeId: string): void => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(storeId)) next.delete(storeId); else next.add(storeId);
+      return next;
+    });
+  };
+  const clearSelection = (): void => { setSelected(new Set<string>()); setSelecting(false); };
+  const startSelecting = (storeId?: string): void => {
+    if (!canSuppress()) return;
+    setSelecting(true);
+    if (storeId) setSelected((prev) => new Set(prev).add(storeId));
+  };
+  const beginSuppressSelected = (): void => {
+    const ids = [...selected()];
+    if (ids.length === 0) return;
+    const byId = new Map(messages.filter((m) => m.storeId).map((m) => [m.storeId!, m]));
+    setSurgeryResult(null);
+    setSurgery({
+      op: 'suppress',
+      messageIds: ids,
+      previews: ids.map((id) => { const m = byId.get(id); return m ? previewOf(m) : id; }),
+    });
+  };
+
+  const sendSurgery = (req: SurgeryRequest, note: string): void => {
+    setSurgeryPending(true);
+    const corrId = `srg-${Date.now()}`;
+    if (req.op === 'rollback') {
+      wire.send({ type: 'rollback', messageId: req.messageIds[0], ...(note ? { note } : {}), corrId });
+    } else {
+      wire.send({ type: 'suppress', messageIds: req.messageIds, ...(note ? { note } : {}), corrId });
+    }
+  };
+  const confirmSurgery = (note: string): void => {
+    const req = surgery();
+    if (req) sendSurgery(req, note);
+  };
+  const quiesceHost = (reason: string): void => {
+    if (!canQuiesce()) return;
+    setHostModeBusy(true);
+    wire.send({ type: 'host-quiesce', ...(reason.trim() ? { reason: reason.trim() } : {}) });
+  };
+  const resumeHost = (): void => {
+    if (!canQuiesce()) return;
+    setHostModeBusy(true);
+    wire.send({ type: 'host-resume' });
+  };
+  const quiesceAndRetry = (note: string): void => {
+    retryAfterQuiesce = { note };
+    setSurgeryResult(null);
+    setSurgeryPending(true);
+    quiesceHost(note || `${surgery()?.op ?? 'surgery'} via webui`);
+  };
+  const onHostMode = (hm: HostModeSnapshot): void => {
+    setHostMode(hm);
+    setHostModeBusy(false);
+    if (retryAfterQuiesce && hm.mode === 'quiesced') {
+      const req = surgery();
+      const { note } = retryAfterQuiesce;
+      retryAfterQuiesce = null;
+      if (req) sendSurgery(req, note); else setSurgeryPending(false);
+    } else if (retryAfterQuiesce && hm.mode !== 'quiescing') {
+      // Quiesce did not land (error frame arrives separately) — stop waiting.
+      retryAfterQuiesce = null;
+      setSurgeryPending(false);
+    }
+  };
+  const onSurgeryResult = (r: SurgeryResultMessage): void => {
+    setSurgeryPending(false);
+    setSurgeryResult(r);
+    if (r.ok) clearSelection();
+    if (panelMode() === 'branches') { refreshBranches(); refreshOpLog(); }
+  };
+  const closeSurgery = (): void => {
+    if (surgeryPending()) return;
+    retryAfterQuiesce = null;
+    setSurgery(null);
+    setSurgeryResult(null);
+  };
+  const refreshOpLog = (): void => {
+    if (!features().has('operator-log')) return;
+    setOpLogLoading(true);
+    wire.send({ type: 'request-operator-log', limit: 200 });
   };
 
   /** Right-sidebar tab selection. The Tree is the most-used surface so it's
@@ -992,6 +1143,14 @@ export function App() {
           setWelcome((w) => (w ? { ...w, branch } : w));
           if (panelMode() === 'branches') refreshBranches();
         },
+        setHostMode: (hm) => { if (hm) onHostMode(hm); else setHostMode(null); },
+        requestHostMode: () => { if (features().has('quiesce')) wire.send({ type: 'request-host-mode' }); },
+        onTurnSettled: () => {
+          if (features().has('quiesce') && hostMode()?.mode === 'quiescing') wire.send({ type: 'request-host-mode' });
+        },
+        onSurgeryResult,
+        setOperatorLog: (entries, path) => { setOpLog(entries); setOpLogPath(path); setOpLogLoading(false); },
+        onOperatorAction: () => { if (panelMode() === 'branches') refreshOpLog(); },
       });
     });
     onCleanup(() => {
@@ -1116,7 +1275,27 @@ export function App() {
         status={wire.status()}
         branchPanelOpen={panelMode() === 'branches'}
         onBranchClick={openBranches}
+        hostMode={features().has('quiesce') ? hostMode() : null}
+        hostModeBusy={hostModeBusy()}
+        hostModeReadOnly={!canQuiesce()}
+        onQuiesce={quiesceHost}
+        onResume={resumeHost}
       />
+      <Lightbox />
+      <Show when={surgery()}>
+        {(req) => (
+          <SurgeryDialog
+            request={req()}
+            pending={surgeryPending()}
+            result={surgeryResult()}
+            canQuiesce={canQuiesce()}
+            hostMode={hostMode()}
+            onConfirm={confirmSurgery}
+            onQuiesceAndRetry={quiesceAndRetry}
+            onClose={closeSurgery}
+          />
+        )}
+      </Show>
       <ReconnectBanner status={wire.status()} />
       <OpsAlertStrip alerts={alertList()} onDismiss={removeOpsAlert} />
       <Show when={wire.observerState() === 'observer' && wire.observer()}>
@@ -1192,10 +1371,27 @@ export function App() {
               </div>
             </Show>
             <For each={messages}>{(m) => (
-              <MessageView msg={m} results={toolResults()} toolUseIds={toolUseIds()} />
+              <MessageRow
+                storeId={m.storeId}
+                canRollback={canRollback() && !!m.storeId}
+                canSuppress={canSuppress() && !!m.storeId}
+                selecting={selecting()}
+                selected={!!m.storeId && selected().has(m.storeId)}
+                onRollback={() => m.storeId && beginRollback(m.storeId)}
+                onSelect={() => m.storeId && (selecting() ? toggleSelected(m.storeId) : startSelecting(m.storeId))}
+              >
+                <MessageView msg={m} results={toolResults()} toolUseIds={toolUseIds()} />
+              </MessageRow>
             )}</For>
+            <Show when={selecting()}>
+              <SelectionBar count={selected().size} onSuppress={beginSuppressSelected} onClear={clearSelection} />
+            </Show>
             </Show>}>
-              <ContextDocument scope={panelScope()} />
+              <ContextDocument
+                scope={panelScope()}
+                canRollback={canRollback() && panelScope() === 'local'}
+                onRollback={(id, preview) => beginRollback(id, preview)}
+              />
             </Show>
           </div>
 
@@ -1267,8 +1463,12 @@ export function App() {
             loading={branchesLoading()}
             readOnly={wire.observerState() === 'observer'}
             onCheckout={checkoutBranch}
-            onRefresh={refreshBranches}
+            onRefresh={() => { refreshBranches(); refreshOpLog(); }}
             onClose={closePanel}
+            operatorLog={features().has('operator-log') ? opLog() : null}
+            operatorLogPath={opLogPath()}
+            operatorLogLoading={opLogLoading()}
+            onRefreshLog={refreshOpLog}
           />
         </Show>
         {/* Was w-72 (288px): the context/settings panels have dense numeric
@@ -1445,6 +1645,16 @@ interface HandlerHooks {
   setBranchesList: (branches: BranchRow[], currentId: string) => void;
   /** React to a server-side branch switch (undo/redo/checkout). */
   onBranchChanged: (branch: { id: string; name: string }) => void;
+  /** Host serving state (welcome, host-mode frames). */
+  setHostMode: (hostMode: HostModeSnapshot | null) => void;
+  /** Ask the server for a fresh host-mode snapshot (after host:* traces). */
+  requestHostMode: () => void;
+  /** A turn ended — refresh host mode if a quiesce was still draining. */
+  onTurnSettled: () => void;
+  onSurgeryResult: (result: SurgeryResultMessage) => void;
+  setOperatorLog: (entries: OperatorLogEntryWire[], path?: string) => void;
+  /** An operator:action trace landed — refresh the log if it is on screen. */
+  onOperatorAction: () => void;
 }
 
 /** True when a scope-stamped response belongs to a scope the operator has
@@ -1464,8 +1674,18 @@ function handleServerMessage(
       hooks.setUsage(msg.usage);
       hooks.setPerAgentCost(msg.perAgentCost ?? []);
       hooks.setCallLedger(msg.callLedger ?? null);
+      hooks.setHostMode(msg.hostMode ?? null);
       return;
     }
+    case 'host-mode':
+      hooks.setHostMode(msg.hostMode);
+      return;
+    case 'surgery-result':
+      hooks.onSurgeryResult(msg);
+      return;
+    case 'operator-log':
+      hooks.setOperatorLog(msg.entries, msg.path);
+      return;
     case 'message-appended':
       hooks.applyAppended(msg.entry);
       return;
@@ -1496,6 +1716,9 @@ function handleServerMessage(
         case 'inference:completed':
         case 'inference:failed':
           hooks.finishStream();
+          // A quiesce that was still draining may have just settled; the
+          // framework emits no trace for "drained", so re-pull the snapshot.
+          hooks.onTurnSettled();
           return;
         case 'inference:tool_calls_yielded': {
           const calls = (e.calls as Array<{ id: string; name: string; input?: unknown }> | undefined) ?? [];
@@ -1520,7 +1743,14 @@ function handleServerMessage(
         case 'ops:alert':
           hooks.onOpsAlert(e);
           return;
+        case 'operator:action':
+          hooks.onOperatorAction();
+          return;
         default:
+          // Host serving-state transitions (host:quiesce / host:resume /
+          // host:quiesced_boot) may originate elsewhere (Discord host
+          // command, API) — pull a fresh snapshot rather than parsing them.
+          if (typeof e.type === 'string' && e.type.startsWith('host:')) hooks.requestHostMode();
           return;
       }
     }
@@ -1611,6 +1841,12 @@ function Header(props: {
   status: string;
   branchPanelOpen: boolean;
   onBranchClick(): void;
+  /** null hides the toggle (host without quiesce support). */
+  hostMode: HostModeSnapshot | null;
+  hostModeBusy: boolean;
+  hostModeReadOnly: boolean;
+  onQuiesce(reason: string): void;
+  onResume(): void;
 }) {
   const fmt = (n: number): string => {
     if (n < 1000) return String(n);
@@ -1652,6 +1888,15 @@ function Header(props: {
           ⑂ {props.welcome!.branch.name}
         </button>
       </Show>
+      <Show when={props.hostMode}>
+        <HostModeToggle
+          hostMode={props.hostMode}
+          busy={props.hostModeBusy}
+          readOnly={props.hostModeReadOnly}
+          onQuiesce={props.onQuiesce}
+          onResume={props.onResume}
+        />
+      </Show>
       <div class="ml-auto text-xs font-mono text-neutral-500">
         {fmt(props.usage.input)} in
         <span class="ml-2">{fmt(props.usage.output)} out</span>
@@ -1672,6 +1917,49 @@ function Header(props: {
 }
 
 type ToolResultInfo = { text: string; isError?: boolean; truncated?: boolean };
+
+/**
+ * Hover toolbar around a canonical chat row: "roll back to here" and
+ * "suppress" (which enters multi-select). Rows without a store id (synthetic
+ * command/trigger/streaming rows) render bare.
+ */
+function MessageRow(props: {
+  storeId?: string;
+  canRollback: boolean;
+  canSuppress: boolean;
+  selecting: boolean;
+  selected: boolean;
+  onRollback(): void;
+  onSelect(): void;
+  children: JSX.Element;
+}) {
+  const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
+  return (
+    <div class={`group relative ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+      <Show when={actionable()}>
+        <div class={`absolute -left-1 top-0 -translate-x-full pr-1 flex flex-col gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
+          <Show when={props.canSuppress}>
+            <button
+              type="button"
+              class={`w-5 h-5 rounded border text-[10px] leading-none ${props.selected ? 'bg-rose-900/70 border-rose-700 text-rose-100' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-rose-700 hover:text-rose-200'}`}
+              title={props.selecting ? (props.selected ? 'deselect' : 'select for suppression') : 'suppress this message (select more, then confirm)'}
+              onClick={props.onSelect}
+            >{props.selected ? '✓' : '⊘'}</button>
+          </Show>
+          <Show when={props.canRollback && !props.selecting}>
+            <button
+              type="button"
+              class="w-5 h-5 rounded border bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] leading-none"
+              title="roll back: make this message the tail of the live branch"
+              onClick={props.onRollback}
+            >⏪</button>
+          </Show>
+        </div>
+      </Show>
+      {props.children}
+    </div>
+  );
+}
 
 function MessageView(props: {
   msg: Message;
@@ -1936,12 +2224,8 @@ function BlockView(props: {
       </div>
     );
   }
-  // media
-  return (
-    <div class="my-1 inline-block text-[11px] font-mono text-sky-400/80 bg-sky-950/20 border border-sky-900/40 rounded px-2 py-0.5">
-      📎 {b.mediaType}
-    </div>
-  );
+  // media — inline image when the host gave us a locator, else the type chip
+  return <MediaView mediaType={b.mediaType} mediaRef={b.ref} />;
 }
 
 function TextBlockView(props: { block: Extract<UiBlock, { kind: 'text' }> }) {
@@ -2049,10 +2333,8 @@ function ToolBlockView(props: {
 
 function MediaChips(props: { blocks?: UiBlock[] }) {
   return (
-    <For each={(props.blocks ?? []).filter((b) => b.kind === 'media')}>{(b) => (
-      <div class="mt-1 inline-block mr-1 text-[11px] font-mono text-sky-400/80 bg-sky-950/20 border border-sky-900/40 rounded px-2 py-0.5">
-        📎 {(b as Extract<UiBlock, { kind: 'media' }>).mediaType}
-      </div>
+    <For each={(props.blocks ?? []).filter((b): b is Extract<UiBlock, { kind: 'media' }> => b.kind === 'media')}>{(b) => (
+      <MediaView mediaType={b.mediaType} mediaRef={b.ref} />
     )}</For>
   );
 }

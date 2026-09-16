@@ -64,6 +64,13 @@ import {
   type PinsListMessage,
   type BranchesListMessage,
   type LessonsListMessage,
+  type HostModeSnapshot,
+  type RollbackMessage,
+  type SuppressMessage,
+  type HostQuiesceMessage,
+  type HostResumeMessage,
+  type RequestOperatorLogMessage,
+  type OperatorLogEntryWire,
 } from '../web/protocol.js';
 import {
   readMcplServersFile,
@@ -72,6 +79,7 @@ import {
 } from '../mcpl-config.js';
 import {
   resolveAgent,
+  buildMediaBlock,
   buildMcplSnapshot,
   buildSettingsState,
   buildPinsSnapshot,
@@ -186,6 +194,9 @@ interface ClientState {
    */
   auth: 'full' | 'pending' | 'observer';
   scopes: Set<ObserverScope> | null;
+  /** Observer grant label (key-authenticated clients) — the requester name
+   *  recorded in the operator log for any action this client takes. */
+  label?: string;
   /** Kills pending connections that never complete the hello. */
   authTimer?: ReturnType<typeof setTimeout>;
   /** Open peek subscriptions for this client, keyed by scope. Each entry
@@ -257,6 +268,38 @@ export { buildContextCoverageSnapshot, type ContextCoverageSnapshot } from '../w
  * structurally (not imported) so the host keeps running against older
  * context-manager copies on boxes — call sites feature-detect.
  */
+/**
+ * Optional live-surgery / quiesce surface of @animalabs/agent-framework,
+ * duck-typed so this host runs unchanged against older framework builds
+ * (the SPA hides affordances the `features` list does not advertise).
+ */
+interface SurgeryCapableFramework {
+  rollbackToMessage?: (
+    agentName: string,
+    opts: { messageId: string; requester?: { via: string; name?: string }; note?: string },
+  ) => Promise<{
+    sourceBranch: string;
+    targetBranch: string;
+    messagesRemoved: number;
+    lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  }>;
+  suppressMessages?: (
+    agentName: string,
+    opts: { messageIds: string[]; requester?: { via: string; name?: string }; note?: string },
+  ) => Promise<{
+    sourceBranch: string;
+    targetBranch: string;
+    messagesRemoved: number;
+    lastVisible?: { participant?: string; role?: string; preview?: string } | null;
+  }>;
+  quiesce?: (opts?: Record<string, unknown>) => Promise<unknown>;
+  resume?: (opts?: Record<string, unknown>) => Promise<unknown>;
+  getHostModeStatus?: () => unknown;
+  recordOperatorAction?: (entry: Omit<OperatorLogEntryWire, 'at'>) => unknown;
+  getOperatorLog?: (opts?: { limit?: number }) => OperatorLogEntryWire[];
+  getOperatorLogPath?: () => string | undefined;
+}
+
 interface WindowCapableCm {
   getMessageCount(): number;
   getMessageWindow(
@@ -979,7 +1022,8 @@ export class WebUiModule implements Module {
     const isStatic = !url.pathname.startsWith('/debug/')
       && url.pathname !== '/curve'
       && url.pathname !== '/healthz'
-      && !url.pathname.startsWith('/files/');
+      && !url.pathname.startsWith('/files/')
+      && !url.pathname.startsWith('/media/');
     if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
       return this.unauthorized(isRetrievalTraceRoute);
     }
@@ -1058,6 +1102,13 @@ export class WebUiModule implements Module {
 
     if (url.pathname === '/debug/context') {
       return this.handleDebugContext(url);
+    }
+
+    // Inline image bytes for transcript media refs (see serveMedia). Same
+    // sensitivity tier as the transcript itself.
+    if (url.pathname.startsWith('/media/')) {
+      if (!httpAllowed('messages')) return this.unauthorized();
+      return this.serveMedia(url);
     }
 
     // Liveness/health JSON for connectome-doctor and the fleet hub. Behind
@@ -1383,6 +1434,7 @@ export class WebUiModule implements Module {
     if (client.authTimer) clearTimeout(client.authTimer);
     client.auth = 'observer';
     client.scopes = result.scopes;
+    client.label = result.grant.label;
     this.send(client, {
       type: 'observer-ack',
       scopes: [...result.scopes],
@@ -1401,7 +1453,263 @@ export class WebUiModule implements Module {
     // Branch listing is conversation-shape metadata (names, fork points) —
     // same sensitivity tier as the message window, so same scope.
     if (type === 'request-branches') return client.scopes?.has('messages') ?? false;
-    return false; // observers are read-only: no user-message/command/mcpl/fleet
+    // Host serving state is liveness telemetry; the operator log is ops.
+    if (type === 'request-host-mode') return client.scopes?.has('health') ?? false;
+    if (type === 'request-operator-log') return client.scopes?.has('ops') ?? false;
+    return false; // observers are read-only: no user-message/command/mcpl/fleet/surgery
+  }
+
+  /** Requester identity recorded in the operator log for this client. */
+  private requesterFor(client: ClientState): { via: string; name?: string } {
+    if (client.auth === 'observer') {
+      return { via: 'webui-observer', ...(client.label ? { name: client.label } : {}) };
+    }
+    return { via: 'webui', name: this.config.basicAuth?.username ?? 'operator' };
+  }
+
+  /** Capabilities the SPA feature-detects. Duck-typed against the bound
+   *  framework so this host works unchanged against an older
+   *  @animalabs/agent-framework (affordances simply do not appear). */
+  private hostFeatures(): string[] {
+    const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
+    const features = ['media'];
+    if (!fw) return features;
+    if (typeof fw.rollbackToMessage === 'function') features.push('rollback');
+    if (typeof fw.suppressMessages === 'function') features.push('suppress');
+    if (typeof fw.quiesce === 'function' && typeof fw.resume === 'function'
+      && typeof fw.getHostModeStatus === 'function') features.push('quiesce');
+    if (typeof fw.getOperatorLog === 'function') features.push('operator-log');
+    return features;
+  }
+
+  /** Host serving state, or null when the framework predates quiesce. */
+  private hostModeSnapshot(): HostModeSnapshot | null {
+    const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
+    if (!fw || typeof fw.getHostModeStatus !== 'function') return null;
+    try {
+      // agent-framework HostModeStatus (#122): { quiesced, drained, reason?,
+      // since?, activeTurns, gatedRequests, backgroundScripts }. A quiesce
+      // that is still draining turns reads as 'quiescing'.
+      const s = (fw.getHostModeStatus() ?? {}) as Record<string, unknown>;
+      const mode = typeof s.mode === 'string' ? s.mode
+        : s.quiesced === true ? (s.drained === false ? 'quiescing' : 'quiesced')
+        : 'serving';
+      return {
+        mode,
+        ...(typeof s.since === 'number' ? { since: s.since } : {}),
+        ...(typeof s.reason === 'string' ? { reason: s.reason } : {}),
+        ...(typeof s.activeTurns === 'number' ? { activeTurns: s.activeTurns } : {}),
+        detail: s,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private broadcastHostMode(): void {
+    const hostMode = this.hostModeSnapshot();
+    if (!hostMode) return;
+    this.broadcastToWelcomed({ type: 'host-mode', hostMode });
+  }
+
+  /**
+   * Live surgery: rollback (fork at a message, switch) or suppress (fork at
+   * head, redact, switch). The framework refuses while the agent is busy —
+   * the SPA offers "quiesce, then retry" on `code: 'agent-busy'`. On success
+   * every client is re-welcomed with the new branch's tail, exactly as
+   * `/checkout` does.
+   */
+  private async handleSurgery(
+    client: ClientState,
+    op: 'rollback' | 'suppress',
+    req: RollbackMessage | SuppressMessage,
+  ): Promise<void> {
+    const app = sharedServer?.app;
+    const panel = this.panelApp();
+    if (!app || !panel) return;
+    const fw = app.framework as unknown as SurgeryCapableFramework;
+    const fn = op === 'rollback' ? fw.rollbackToMessage : fw.suppressMessages;
+    if (typeof fn !== 'function') {
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false,
+        error: `this host's agent-framework has no live ${op} — upgrade @animalabs/agent-framework`,
+      });
+      return;
+    }
+    let agentName: string;
+    try {
+      agentName = resolveAgent(panel, req.agent);
+    } catch (err) {
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    const requester = this.requesterFor(client);
+    const note = req.note?.trim() || undefined;
+    try {
+      const r = op === 'rollback'
+        ? await fw.rollbackToMessage!(agentName, {
+            messageId: (req as RollbackMessage).messageId,
+            requester,
+            ...(note ? { note } : {}),
+          })
+        : await fw.suppressMessages!(agentName, {
+            messageIds: (req as SuppressMessage).messageIds,
+            requester,
+            ...(note ? { note } : {}),
+          });
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: true, agent: agentName,
+        sourceBranch: r.sourceBranch, targetBranch: r.targetBranch,
+        messagesRemoved: r.messagesRemoved, lastVisible: r.lastVisible ?? null,
+      });
+      // Same follow-through as a /checkout: config mount, branch chip,
+      // fresh tail for every welcomed client.
+      await this.materializeConfigMount();
+      this.broadcastBranchChanged();
+      this.refreshAllWelcomes();
+    } catch (err) {
+      const code = (err as { code?: unknown } | null)?.code;
+      this.send(client, {
+        type: 'surgery-result', corrId: req.corrId, op, ok: false, agent: agentName,
+        error: err instanceof Error ? err.message : String(err),
+        ...(typeof code === 'string' ? { code } : {}),
+      });
+    }
+  }
+
+  /** Quiesce / resume the host (agent-framework #122) and record it. */
+  private async handleHostMode(
+    client: ClientState,
+    verb: 'quiesce' | 'resume',
+    req: HostQuiesceMessage | HostResumeMessage,
+  ): Promise<void> {
+    const app = sharedServer?.app;
+    if (!app) return;
+    const fw = app.framework as unknown as SurgeryCapableFramework;
+    const fn = verb === 'quiesce' ? fw.quiesce : fw.resume;
+    if (typeof fn !== 'function') {
+      this.send(client, {
+        type: 'error', corrId: req.corrId,
+        message: `this host's agent-framework has no ${verb} support — upgrade @animalabs/agent-framework`,
+      });
+      return;
+    }
+    const requester = this.requesterFor(client);
+    const reason = verb === 'quiesce' ? (req as HostQuiesceMessage).reason?.trim() || undefined : undefined;
+    try {
+      // quiesce({reason?, timeoutMs?, abandon?}) waits for in-flight turns to
+      // drain (up to its timeout); resume({force?}) re-runs the per-agent
+      // feasibility gate and throws ResumeBlockedError with verdicts.
+      if (verb === 'quiesce') await fw.quiesce!(reason ? { reason } : {});
+      else await fw.resume!({});
+      const hostMode = this.hostModeSnapshot();
+      fw.recordOperatorAction?.({
+        kind: verb,
+        requester,
+        ...(reason ? { note: reason } : {}),
+        ...(hostMode ? { result: { mode: hostMode.mode } } : {}),
+      });
+      if (hostMode) this.send(client, { type: 'host-mode', corrId: req.corrId, hostMode });
+      this.broadcastHostMode();
+    } catch (err) {
+      let message = err instanceof Error ? err.message : String(err);
+      // ResumeBlockedError: say which agent's context would not fit and why,
+      // not just "blocked".
+      const verdicts = (err as { verdicts?: unknown } | null)?.verdicts;
+      if (Array.isArray(verdicts) && verdicts.length > 0) {
+        const lines = verdicts.map((v) => {
+          const vv = v as { agentName?: string; preview?: { reason?: string; transitionReason?: string; transition?: string } };
+          const why = vv.preview?.reason ?? vv.preview?.transitionReason ?? vv.preview?.transition ?? 'not feasible';
+          return `${vv.agentName ?? '?'}: ${why}`;
+        });
+        message = `${message} — ${lines.join('; ')}`;
+      }
+      fw.recordOperatorAction?.({ kind: verb, requester, ...(reason ? { note: reason } : {}), error: message });
+      this.send(client, { type: 'error', corrId: req.corrId, message: `${verb} failed: ${message}` });
+      this.broadcastHostMode();
+    }
+  }
+
+  private sendOperatorLog(client: ClientState, req: RequestOperatorLogMessage): void {
+    const fw = sharedServer?.app?.framework as unknown as SurgeryCapableFramework | undefined;
+    if (!fw || typeof fw.getOperatorLog !== 'function') {
+      this.send(client, { type: 'operator-log', corrId: req.corrId, entries: [] });
+      return;
+    }
+    const limit = Math.max(1, Math.min(1000, Math.floor(req.limit ?? 100)));
+    try {
+      const path = typeof fw.getOperatorLogPath === 'function' ? fw.getOperatorLogPath() : undefined;
+      this.send(client, {
+        type: 'operator-log', corrId: req.corrId,
+        entries: fw.getOperatorLog({ limit }),
+        ...(path ? { path } : {}),
+      });
+    } catch (err) {
+      this.send(client, {
+        type: 'error', corrId: req.corrId,
+        message: `operator log unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  /**
+   * `/media/<messageId>/<blockPath>` — one inline image, streamed as bytes.
+   * Transcript frames carry only a `ref`; the browser fetches on render, so
+   * multi-MB base64 never rides the WebSocket and never inflates a welcome.
+   * Observer sessions need the `messages` scope (same tier as the transcript).
+   */
+  private async serveMedia(url: URL): Promise<Response> {
+    const rest = url.pathname.slice('/media/'.length);
+    const slash = rest.indexOf('/');
+    if (slash <= 0 || slash === rest.length - 1) {
+      return Response.json({ error: 'expected /media/<messageId>/<blockPath>' }, { status: 400 });
+    }
+    let messageId: string;
+    try {
+      messageId = decodeURIComponent(rest.slice(0, slash));
+    } catch {
+      return Response.json({ error: 'malformed message id' }, { status: 400 });
+    }
+    const path = rest.slice(slash + 1);
+    const scope = url.searchParams.get('scope') ?? undefined;
+    const agent = url.searchParams.get('agent') ?? undefined;
+    let data: { mediaType: string; base64: string };
+    try {
+      if (isChildScope(scope)) {
+        const fleet = this.fleetModule();
+        if (!fleet) {
+          return Response.json({ error: `scope '${scope}' requested but the fleet module is not loaded` }, { status: 404 });
+        }
+        const r = await fleet.requestPanel(scope, 'media', { messageId, path, ...(agent ? { agent } : {}) });
+        if (!r.ok) return Response.json({ error: r.error ?? 'media request failed' }, { status: r.status ?? 502 });
+        data = r.data as { mediaType: string; base64: string };
+      } else {
+        const app = this.panelApp();
+        if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+        data = buildMediaBlock(app, resolveAgent(app, agent), { messageId, path });
+      }
+    } catch (err) {
+      return panelErrorResponse(err);
+    }
+    if (typeof data?.base64 !== 'string' || typeof data?.mediaType !== 'string' || !data.mediaType.startsWith('image/')) {
+      return Response.json({ error: 'media payload malformed' }, { status: 502 });
+    }
+    const bytes = Buffer.from(data.base64, 'base64');
+    return new Response(bytes, {
+      headers: {
+        'content-type': data.mediaType,
+        'content-length': String(bytes.length),
+        // Store ids are stable and message content is immutable in practice;
+        // a day's private cache keeps re-renders free.
+        'cache-control': 'private, max-age=86400',
+        'x-content-type-options': 'nosniff',
+        // Defence in depth for SVG: no scripts, no external loads, no frames.
+        'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      },
+    });
   }
 
   private onWsMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer): void {
@@ -1490,6 +1798,35 @@ export class WebUiModule implements Module {
         });
         return;
       }
+
+      case 'rollback':
+        void this.handleSurgery(client, 'rollback', parsed);
+        return;
+
+      case 'suppress':
+        void this.handleSurgery(client, 'suppress', parsed);
+        return;
+
+      case 'host-quiesce':
+        void this.handleHostMode(client, 'quiesce', parsed);
+        return;
+
+      case 'host-resume':
+        void this.handleHostMode(client, 'resume', parsed);
+        return;
+
+      case 'request-host-mode': {
+        const hostMode = this.hostModeSnapshot();
+        this.send(client, {
+          type: 'host-mode', corrId: parsed.corrId,
+          hostMode: hostMode ?? { mode: 'unsupported' },
+        });
+        return;
+      }
+
+      case 'request-operator-log':
+        this.sendOperatorLog(client, parsed);
+        return;
 
       case 'subscribe-peek':
         this.handleSubscribePeek(client, parsed.scope, parsed.active);
@@ -2730,6 +3067,7 @@ export class WebUiModule implements Module {
     }
 
     const branch = cm?.currentBranch();
+    const hostMode = this.hostModeSnapshot();
 
     return {
       type: 'welcome',
@@ -2757,6 +3095,8 @@ export class WebUiModule implements Module {
         callIdIndex: localSnap.callIdIndex,
       },
       childTrees,
+      features: this.hostFeatures(),
+      ...(hostMode ? { hostMode } : {}),
       usage: sharedServer!.latestUsage,
       ...(sharedServer!.latestPerAgentCost.length > 0
         ? { perAgentCost: sharedServer!.latestPerAgentCost }
@@ -2936,13 +3276,24 @@ function capText(s: string, cap: number): { text: string; truncated?: boolean } 
  *
  * `index` is the message's store slot index — the client's paging cursor.
  */
-function toWireEntry(msg: MessageLike, index: number): WelcomeMessageEntry {
+function toWireEntry(
+  msg: MessageLike,
+  index: number,
+  opts: { mediaRefs?: boolean } = {},
+): WelcomeMessageEntry {
   const blocks: import('../web/protocol.js').MessageBlock[] = [];
   const textParts: string[] = [];
   let toolResults = 0;
   let conversational = 0; // text/thinking blocks — used for participant fixup
+  // Lazy image locator: `<messageId>/<blockIndex>[.<inner>]`, served by
+  // /media/. Only when the entry maps 1:1 onto one stored message (coalesced
+  // shard runs do not — their block indices are synthetic).
+  const mediaRef = (blockPath: string, mediaType: string): string | undefined =>
+    opts.mediaRefs !== false && typeof msg.id === 'string' && msg.id.length > 0 && mediaType.startsWith('image/')
+      ? `${encodeURIComponent(msg.id)}/${blockPath}`
+      : undefined;
 
-  for (const block of msg.content) {
+  for (const [bi, block] of msg.content.entries()) {
     const b = block as {
       type?: string; text?: unknown; thinking?: unknown; data?: unknown;
       id?: unknown; name?: unknown; input?: unknown;
@@ -2997,28 +3348,42 @@ function toWireEntry(msg: MessageLike, index: number): WelcomeMessageEntry {
             ...(b.isError === true ? { isError: true } : {}),
           });
           toolResults++;
+          // Images a tool returned (read_image, cameras, screenshots) ride as
+          // sibling media blocks with a nested locator so they render inline.
+          if (Array.isArray(b.content)) {
+            for (const [ii, inner] of b.content.entries()) {
+              const ib = inner as { type?: string; source?: { mediaType?: unknown }; ref?: { mediaType?: unknown } } | null;
+              const mt = ib?.type === 'image' && typeof ib.source?.mediaType === 'string' ? ib.source.mediaType
+                : ib?.type === 'blob_ref' && typeof ib.ref?.mediaType === 'string' ? ib.ref.mediaType
+                : null;
+              if (!mt || !mt.startsWith('image/')) continue;
+              const ref = mediaRef(`${bi}.${ii}`, mt);
+              blocks.push({ kind: 'media', mediaType: mt, ...(ref ? { ref } : {}) });
+            }
+          }
         }
         break;
       case 'image':
       case 'document':
       case 'audio':
-      case 'video':
-        blocks.push({
-          kind: 'media',
-          mediaType:
-            typeof b.source?.mediaType === 'string' ? b.source.mediaType
-            : typeof b.mediaType === 'string' ? b.mediaType
-            : b.type,
-        });
+      case 'video': {
+        const mediaType =
+          typeof b.source?.mediaType === 'string' ? b.source.mediaType
+          : typeof b.mediaType === 'string' ? b.mediaType
+          : b.type;
+        const ref = b.type === 'image' ? mediaRef(String(bi), mediaType) : undefined;
+        blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
-      case 'blob_ref':
+      }
+      case 'blob_ref': {
         // Un-inflated media placeholder (welcome/history are read with
-        // resolveBlobs: false so multi-MB base64 never hits the wire).
-        blocks.push({
-          kind: 'media',
-          mediaType: typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob',
-        });
+        // resolveBlobs: false so multi-MB base64 never hits the wire). The
+        // ref lets the browser fetch the bytes on render instead.
+        const mediaType = typeof b.ref?.mediaType === 'string' ? b.ref.mediaType : 'blob';
+        const ref = mediaRef(String(bi), mediaType);
+        blocks.push({ kind: 'media', mediaType, ...(ref ? { ref } : {}) });
         break;
+      }
       default:
         break; // unknown block types are skipped, not errored
     }
@@ -3094,7 +3459,7 @@ function coalesceAndFlatten(messages: readonly MessageLike[], startIndex: number
       }
     }
     const merged: MessageLike = { ...shards[0]!, content: mergedContent };
-    out.push(toWireEntry(merged, startIndex + runStart));
+    out.push(toWireEntry(merged, startIndex + runStart, { mediaRefs: false }));
   }
   return out;
 }
