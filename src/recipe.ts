@@ -650,6 +650,19 @@ export interface RecipeModules {
   mcplAdmin?: boolean | { surface?: 'tools' | 'utilities' };
 
   /**
+   * Agent-facing history browsing (HistoryModule, agent-framework#158). OPT-IN
+   * — off by default. Adds `history--stats` / `history--extract` /
+   * `history--search` / `history--overview` tools for querying the agent's
+   * own uncompressed chronicle (native secondary indexes: stats, time/channel
+   * extraction, regex search) and for browsing already-compressed spans via
+   * existing summaries (no new LLM calls). Channel-filter arguments on all
+   * four tools accept a live or historical channel label/address, not just
+   * the raw internal channel id, when MCPL is configured (resolved via the
+   * framework's `ChannelRegistry`).
+   */
+  history?: boolean;
+
+  /**
    * The agent's own archipelago-home identity (connectome docs/home-node.md):
    * an ed25519 keypair in the data dir, enrolled at the home node via an
    * operator invite, exchanged for fresh aid1 audience tokens on demand.
