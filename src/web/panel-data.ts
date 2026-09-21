@@ -21,6 +21,7 @@
 import type { AgentFramework } from '@animalabs/agent-framework';
 import type { Recipe } from '../recipe.js';
 import type { CallLedger } from '../call-ledger.js';
+import type { QuotaMeter } from '../quota-meter.js';
 import {
   readMcplServersFile,
   DEFAULT_CONFIG_PATH,
@@ -33,6 +34,8 @@ export interface PanelAppRef {
   recipe: Recipe;
   /** Content-free recent provider-call ledger, when the host wired one. */
   callLedger?: CallLedger | null;
+  /** Subscription quota windows, when the host runs on a subscription. */
+  quotaMeter?: QuotaMeter | null;
 }
 
 /** Panel operations servable by any conhost process. Kept as a const list so
@@ -54,6 +57,7 @@ export const PANEL_OPS = [
   'context-maintenance',
   'debug-context',
   'media',
+  'quota',
 ] as const;
 export type PanelOp = (typeof PANEL_OPS)[number];
 
@@ -127,6 +131,8 @@ export async function runPanelOp(
       }
       case 'health':
         return { ok: true, data: buildHealthSnapshot(app) };
+      case 'quota':
+        return { ok: true, data: await buildQuotaSnapshot(app) };
       case 'context-makeup':
         return { ok: true, data: await buildContextMakeup(app, resolveAgent(app, params.agent)) };
       case 'context-coverage':
@@ -646,6 +652,25 @@ export function applyPinRemove(app: PanelAppRef, agentName: string, pinId: strin
  * runtime settings, and (when a ledger is wired) recent provider calls.
  * Everything is read-only and cheap: no compile, no count_tokens.
  */
+/**
+ * Subscription quota windows. The request IS the poll: a client asks only
+ * while its page is visible, and the meter's refresh floor keeps any number
+ * of viewers down to one provider read per interval. `subscription: false`
+ * tells the client to keep showing dollars.
+ */
+export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
+  if (!app.quotaMeter) return { subscription: false, windows: [] };
+  const snapshot = await app.quotaMeter.refresh();
+  return {
+    subscription: true,
+    provider: app.quotaMeter.provider,
+    windows: snapshot?.windows ?? [],
+    fetchedAt: snapshot?.fetchedAt ?? 0,
+    ...(snapshot?.error ? { error: snapshot.error } : {}),
+    blockedUntil: app.quotaMeter.blockedUntil(app.recipe.agent.model) ?? null,
+  };
+}
+
 export function buildHealthSnapshot(app: PanelAppRef): Record<string, unknown> {
   const fw = app.framework as unknown as { healthSnapshot?: () => Record<string, unknown> };
   if (typeof fw.healthSnapshot !== 'function') {

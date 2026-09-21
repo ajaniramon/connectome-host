@@ -18,6 +18,7 @@ import { ContextDocument } from './ContextDocument';
 import { ObserverGateScreen } from './ObserverGate';
 import { OpsAlertStrip, HealthPanel, type OpsAlert, type HealthSnapshot } from './Health';
 import { BranchPanel } from './Branches';
+import { createQuotaPoll, quotaReadout, quotaTitle, quotaTone } from './quota';
 import {
   WEB_PROTOCOL_VERSION,
   type WebUiServerMessage,
@@ -26,6 +27,7 @@ import {
   type HistoryPageMessage,
   type MessageBlock,
   type TokenUsage,
+  type QuotaSnapshotData,
   type PerAgentCost,
   type CallLedgerSnapshot,
   type BranchRow,
@@ -137,6 +139,7 @@ export function App() {
   let pendingHistoryCorr: string | null = null;
   let pendingHistoryTimer: number | undefined;
   const [usage, setUsage] = createSignal<TokenUsage>({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  const quota = createQuotaPoll();
   const [perAgentCost, setPerAgentCost] = createSignal<PerAgentCost[]>([]);
   const [callLedger, setCallLedger] = createSignal<CallLedgerSnapshot | null>(null);
   const [draft, setDraft] = createSignal('');
@@ -1272,6 +1275,7 @@ export function App() {
       <Header
         welcome={welcome()}
         usage={usage()}
+        quota={quota()}
         status={wire.status()}
         branchPanelOpen={panelMode() === 'branches'}
         onBranchClick={openBranches}
@@ -1452,6 +1456,7 @@ export function App() {
               sessionUsage={usage()}
               perAgentCost={perAgentCost()}
               callLedger={callLedger()}
+              quota={quota()}
               onClose={closePanel}
             />
           )}
@@ -1838,6 +1843,8 @@ function handleServerMessage(
 function Header(props: {
   welcome: WelcomeMessage | null;
   usage: TokenUsage;
+  /** Subscription quota windows; replaces the dollar figure when present. */
+  quota: QuotaSnapshotData | null;
   status: string;
   branchPanelOpen: boolean;
   onBranchClick(): void;
@@ -1903,7 +1910,12 @@ function Header(props: {
         <Show when={props.usage.cacheRead > 0}>
           <span class="ml-2">{fmt(props.usage.cacheRead)} cache</span>
         </Show>
-        <Show when={props.usage.cost && props.usage.cost.total > 0}>
+        <Show when={props.quota?.subscription && props.quota.windows.length > 0}>
+          <span class={`ml-3 ${quotaTone(props.quota!)}`} title={quotaTitle(props.quota!)}>
+            {quotaReadout(props.quota!)}
+          </span>
+        </Show>
+        <Show when={!props.quota?.subscription && props.usage.cost && props.usage.cost.total > 0}>
           <span
             class="ml-3 text-emerald-300"
             title={`Estimated cost (${props.usage.cost!.currency})`}
