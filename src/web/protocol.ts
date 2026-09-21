@@ -290,8 +290,12 @@ export interface QuotaSnapshotData {
   }>;
   fetchedAt?: number;
   error?: string;
-  /** Epoch ms until which inference is parked on a spent window, else null. */
+  /** Epoch ms at which the last spent window resets, else null. A spent
+   *  window is not by itself a parked agent — see `parked`. */
   blockedUntil?: number | null;
+  /** The framework is holding an agent on the host's quota verdict. null when
+   *  the framework predates the hook and cannot say. */
+  parked?: boolean | null;
 }
 
 /** Per-agent cost slice used by the WebUI usage panel to label rows. Only

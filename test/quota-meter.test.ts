@@ -237,3 +237,61 @@ describe('quotaProviderHold', () => {
     healthy.dispose();
   });
 });
+
+describe('review follow-ups', () => {
+  test('a watched meter keeps polling through error backoff and recovers', async () => {
+    // Real clock: the point is that a timer tick suppressed by the backoff
+    // floor re-arms itself instead of leaving the meter with no timer at all.
+    const source = fakeSource([new Error('down'), new Error('down'), new Error('down'),
+      [{ key: 'five_hour', label: '5h', utilization: 7 }]]);
+    const meter = new QuotaMeter(source, { minRefreshIntervalMs: 10, watchIntervalMs: 15 });
+    const release = meter.watch();
+    await new Promise((r) => setTimeout(r, 600));
+    expect(source.calls).toBeGreaterThanOrEqual(4);
+    expect(formatQuotaReadout(meter.getSnapshot())).toBe('7% 5h');
+    release();
+    meter.dispose();
+  });
+
+  test('a spent window with no reset time holds one slice on a fresh reading only', async () => {
+    let now = 1_000_000;
+    const source = fakeSource([[{ key: 'seven_day', label: 'weekly', utilization: 100 }]]);
+    const meter = new QuotaMeter(source, { now: () => now });
+    await meter.refresh();
+    const hook = quotaProviderHold(meter, () => undefined, () => now);
+    const hold = hook(rateLimit(), 'resident');
+    expect(hold?.holdMs).toBe(10 * 60_000);
+    expect(hold?.reason).toContain('reset time not reported');
+    now += 2 * HOUR; // the reading is now too old to ground a hold on
+    source.fetchWindows = async () => { throw new Error('down'); };
+    expect(hook(rateLimit(), 'resident')).toBeUndefined();
+    meter.dispose();
+  });
+
+  test('the framework-supplied model wins over the recipe model for scoped windows', async () => {
+    let now = 1_000_000;
+    const source = fakeSource([[{ key: 'seven_day_opus', label: 'opus wk', utilization: 100, resetsAt: now + HOUR, model: 'opus' }]]);
+    const meter = new QuotaMeter(source, { now: () => now });
+    await meter.refresh();
+    const hook = quotaProviderHold(meter, () => 'claude-opus-4-6', () => now);
+    expect(hook(rateLimit(), 'subconscious', { model: 'claude-sonnet-5' })).toBeUndefined();
+    expect(hook(rateLimit(), 'resident', { model: 'claude-opus-4-6' })?.holdMs).toBe(10 * 60_000);
+    expect(hook(rateLimit(), 'resident')?.holdMs).toBe(10 * 60_000); // older framework: no context
+    meter.dispose();
+  });
+
+  test('numeric resets_at is epoch seconds', () => {
+    const [w] = parseAnthropicUsage({ seven_day: { utilization: 100, resets_at: 1790587734 } });
+    expect(w!.resetsAt).toBe(1790587734_000);
+  });
+
+  test('codex: the keyed codex bucket wins; a foreign legacy bucket is not ours', () => {
+    const win = { usedPercent: 42, windowDurationMins: 10080, resetsAt: 1790587734 };
+    expect(parseCodexRateLimits({
+      rateLimits: { limitId: 'other', primary: { ...win, usedPercent: 99 } },
+      rateLimitsByLimitId: { codex: { primary: win, secondary: null } },
+    }).map((w) => `${w.utilization}% ${w.label}`)).toEqual(['42% weekly']);
+    expect(parseCodexRateLimits({ rateLimits: { limitId: 'other', primary: win } })).toEqual([]);
+    expect(parseCodexRateLimits({ rateLimits: { limitName: 'codex', primary: win } })).toHaveLength(1);
+  });
+});
