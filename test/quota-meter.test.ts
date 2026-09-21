@@ -61,6 +61,32 @@ describe('parseAnthropicUsage', () => {
     expect(windows.map((w) => w.label)).toEqual(['weekly', 'fable wk', 'opus wk']);
   });
 
+  test('the live response shape (max plan, 2026-09-21), trimmed', () => {
+    // Unknown window keys come and go server-side; they must be ignored, and
+    // limits[] repeats the session/weekly windows under other kinds.
+    const windows = parseAnthropicUsage({
+      five_hour: { utilization: 20, resets_at: '2026-09-21T12:00:00.205547+00:00', limit_dollars: null, locked_reason: null },
+      seven_day: { utilization: 13, resets_at: '2026-09-26T06:00:00.205570+00:00', limit_dollars: null, locked_reason: null },
+      seven_day_oauth_apps: null,
+      seven_day_opus: null,
+      seven_day_sonnet: null,
+      nimbus_quill: { utilization: 0, resets_at: null },
+      extra_usage: { is_enabled: false, utilization: null },
+      limits: [
+        { kind: 'session', group: 'session', percent: 20, resets_at: '2026-09-21T12:00:00.205547+00:00', scope: null, is_active: false },
+        { kind: 'weekly_all', group: 'weekly', percent: 13, resets_at: '2026-09-26T06:00:00.128872+00:00', scope: null, is_active: false },
+        {
+          kind: 'weekly_scoped', group: 'weekly', percent: 25, resets_at: '2026-09-26T06:00:00.129053+00:00',
+          scope: { model: { id: null, display_name: 'Fable' }, surface: null }, is_active: true,
+        },
+      ],
+      spend: { percent: 0, enabled: false },
+    });
+    expect(windows.map((w) => `${w.utilization}% ${w.label}`).join(' | ')).toBe('13% weekly | 25% fable wk | 20% 5h');
+    expect(windows[1]!.model).toBe('fable');
+    expect(windows[1]!.resetsAt).toBe(Date.parse('2026-09-26T06:00:00.129053Z'));
+  });
+
   test('an unrecognisable body is no reading, not a guess', () => {
     expect(parseAnthropicUsage(null)).toEqual([]);
     expect(parseAnthropicUsage('<html>')).toEqual([]);
