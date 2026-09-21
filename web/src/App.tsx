@@ -1954,25 +1954,28 @@ function MessageRow(props: {
   children: JSX.Element;
 }) {
   const actionable = (): boolean => !!props.storeId && (props.canRollback || props.canSuppress);
+  // The toolbar lives INSIDE the row (top-right). An earlier version hung it
+  // off the row's left edge, where the scroll pane's overflow clipping made
+  // it all but invisible — hover affordances must be inside the clip box.
   return (
-    <div class={`group relative ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
+    <div class={`group relative ${actionable() ? 'pr-2' : ''} ${props.selected ? 'ring-1 ring-rose-800/70 rounded bg-rose-950/10' : ''}`}>
       <Show when={actionable()}>
-        <div class={`absolute -left-1 top-0 -translate-x-full pr-1 flex flex-col gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
-          <Show when={props.canSuppress}>
-            <button
-              type="button"
-              class={`w-5 h-5 rounded border text-[10px] leading-none ${props.selected ? 'bg-rose-900/70 border-rose-700 text-rose-100' : 'bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-rose-700 hover:text-rose-200'}`}
-              title={props.selecting ? (props.selected ? 'deselect' : 'select for suppression') : 'suppress this message (select more, then confirm)'}
-              onClick={props.onSelect}
-            >{props.selected ? '✓' : '⊘'}</button>
-          </Show>
+        <div class={`absolute right-0 top-0 z-10 flex gap-1 ${props.selecting ? '' : 'opacity-0 group-hover:opacity-100 focus-within:opacity-100'} transition-opacity`}>
           <Show when={props.canRollback && !props.selecting}>
             <button
               type="button"
-              class="w-5 h-5 rounded border bg-neutral-900 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] leading-none"
-              title="roll back: make this message the tail of the live branch"
+              class="px-1.5 py-0.5 rounded border bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-amber-700 hover:text-amber-200 text-[10px] font-mono leading-tight shadow"
+              title="roll back: fork the chronicle here and make this message the tail of the live branch (the current branch keeps everything after it)"
               onClick={props.onRollback}
-            >⏪</button>
+            >⏪ roll back</button>
+          </Show>
+          <Show when={props.canSuppress}>
+            <button
+              type="button"
+              class={`px-1.5 py-0.5 rounded border text-[10px] font-mono leading-tight shadow ${props.selected ? 'bg-rose-900/70 border-rose-700 text-rose-100' : 'bg-neutral-900/95 border-neutral-700 text-neutral-400 hover:border-rose-700 hover:text-rose-200'}`}
+              title={props.selecting ? (props.selected ? 'deselect' : 'select for suppression') : 'suppress: select this message (and more), then confirm in the bar below'}
+              onClick={props.onSelect}
+            >{props.selected ? '✓ selected' : props.selecting ? '⊘ select' : '⊘ suppress'}</button>
           </Show>
         </div>
       </Show>
