@@ -150,6 +150,14 @@ export function App() {
   type PanelMode = 'stream' | 'usage' | 'branches';
   const [focusedId, setFocusedId] = createSignal<string | null>(null);
   const [focusedNode, setFocusedNode] = createSignal<UiNode | null>(null);
+  /** The usage panel follows the focused node, and a fleet child answers for
+   *  its own credential: a pay-per-token child under a subscription parent
+   *  keeps its dollars. (The header stays the parent's readout.) */
+  const usageQuotaScope = (): string | null => {
+    const src = focusedNode()?.streamSource;
+    return src && (src.kind === 'child-event-all' || src.kind === 'child-event-agent') ? src.childName : null;
+  };
+  const focusedQuota = createQuotaPoll(usageQuotaScope);
   const [panelMode, setPanelMode] = createSignal<PanelMode | null>(null);
   const [streamLines, setStreamLines] = createSignal<StreamLine[]>([]);
   /** Default-collapsed; the parent root and freshly-spawned fleet children
@@ -1456,7 +1464,7 @@ export function App() {
               sessionUsage={usage()}
               perAgentCost={perAgentCost()}
               callLedger={callLedger()}
-              quota={quota()}
+              quota={usageQuotaScope() === null ? quota() : focusedQuota()}
               onClose={closePanel}
             />
           )}

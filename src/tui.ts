@@ -2632,7 +2632,9 @@ export async function runTui(app: AppContext): Promise<void> {
           const session = app.sessionManager.getActiveSession();
           refreshFromStore();
           addLine(`Session: ${session?.name ?? 'unknown'}`, GRAY);
-          state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          // The quota readout belongs to the credential, not the session.
+          state.tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+            ...(state.tokens.quota !== undefined ? { quota: state.tokens.quota } : {}) };
           state.ctxTokens = 0;
           // Alerts describe the OLD session's strategy/agents; the new
           // session's own klaxons re-fire within their alarm interval if the

@@ -658,6 +658,23 @@ export function applyPinRemove(app: PanelAppRef, agentName: string, pinId: strin
  * of viewers down to one provider read per interval. `subscription: false`
  * tells the client to keep showing dollars.
  */
+/** Whether the framework is actually holding an agent on a host verdict. A
+ *  spent window alone parks nothing: the hold arms on a 429, and only on a
+ *  framework that has the `providerHold` hook. null = framework cannot say. */
+function hostHoldActive(app: PanelAppRef): boolean | null {
+  const fw = app.framework as unknown as { healthSnapshot?: () => { agents?: unknown } };
+  if (typeof fw.healthSnapshot !== 'function') return null;
+  try {
+    const agents = fw.healthSnapshot().agents;
+    if (!Array.isArray(agents)) return null;
+    const flags = agents.map((a) => (a as { providerAdmission?: { hostHold?: unknown } }).providerAdmission?.hostHold);
+    if (!flags.some((f) => typeof f === 'boolean')) return null;
+    return flags.some((f) => f === true);
+  } catch {
+    return null;
+  }
+}
+
 export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<string, unknown>> {
   if (!app.quotaMeter) return { subscription: false, windows: [] };
   const snapshot = await app.quotaMeter.refresh();
@@ -668,6 +685,7 @@ export async function buildQuotaSnapshot(app: PanelAppRef): Promise<Record<strin
     fetchedAt: snapshot?.fetchedAt ?? 0,
     ...(snapshot?.error ? { error: snapshot.error } : {}),
     blockedUntil: app.quotaMeter.blockedUntil(app.recipe.agent.model) ?? null,
+    parked: hostHoldActive(app),
   };
 }
 

@@ -22,6 +22,7 @@ import type {
   CallLedgerVerdict,
   QuotaSnapshotData,
 } from '@conhost/web/protocol';
+import { quotaStatus } from './quota';
 
 export function UsagePanel(props: {
   node: UiNode;
@@ -36,11 +37,14 @@ export function UsagePanel(props: {
    *  fleet children. */
   callLedger: CallLedgerSnapshot | null;
   /** Subscription quota windows. On a subscription host every dollar figure
-   *  in this panel is list-price fiction, so they give way to these. */
+   *  in this panel is list-price fiction: totals and per-agent costs give way
+   *  to these, and the call ledger's are relabelled as list-price equivalents. */
   quota: QuotaSnapshotData | null;
   onClose(): void;
 }) {
   const onSubscription = (): boolean => props.quota?.subscription === true;
+  // Cost slices are this process's own; on a subscription they are fiction.
+  const perAgentCost = (): PerAgentCost[] => (onSubscription() ? [] : props.perAgentCost);
   const costFor = (agentName: string): { total: number; currency: string } | undefined => {
     return props.perAgentCost.find(c => c.name === agentName)?.cost;
   };
@@ -124,10 +128,8 @@ export function UsagePanel(props: {
                 )}
               </For>
             </div>
-            <Show when={props.quota!.blockedUntil}>
-              <div class="text-rose-400 mt-1">
-                inference parked until {new Date(props.quota!.blockedUntil!).toLocaleString()}
-              </div>
+            <Show when={quotaStatus(props.quota!)}>
+              <div class="text-rose-400 mt-1">{quotaStatus(props.quota!)}</div>
             </Show>
           </section>
         </Show>
@@ -136,13 +138,13 @@ export function UsagePanel(props: {
           <section>
             <div class="text-neutral-500 uppercase tracking-wider text-[10px] mb-1">by node</div>
             <div class="space-y-1">
-              <For each={breakdown()}>{(child) => <BreakdownRow node={child} perAgentCost={props.perAgentCost} />}</For>
+              <For each={breakdown()}>{(child) => <BreakdownRow node={child} perAgentCost={perAgentCost()} />}</For>
             </div>
           </section>
         </Show>
 
         <Show when={props.node.kind === 'process'}>
-          <CallLedgerSection ledger={props.callLedger} />
+          <CallLedgerSection ledger={props.callLedger} listPrice={onSubscription()} />
 
           <section class="text-[10px] text-neutral-600 italic leading-snug">
             Session total comes from the membrane's per-call usage stream.
@@ -155,7 +157,10 @@ export function UsagePanel(props: {
   );
 }
 
-function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null }) {
+/** `listPrice`: subscription host — the ledger's dollars are not a bill. They
+ *  stay, labelled as list-price equivalents, because the column is how a
+ *  cache regression shows up; it is dimmed so it cannot pass for spend. */
+function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null; listPrice?: boolean }) {
   const rows = (): CallLedgerRow[] => [...(props.ledger?.rows ?? [])].slice(-30).reverse();
   return (
     <section>
@@ -164,7 +169,7 @@ function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null }) {
         <Show when={props.ledger}>
           {(ledger) => (
             <span class="ml-auto text-[10px] text-neutral-500">
-              ${fmtCost(ledger().summary.cost?.total ?? 0)} retained · {Math.round(ledger().summary.cacheHitRatio * 100)}% cached
+              {props.listPrice ? '≈' : ''}${fmtCost(ledger().summary.cost?.total ?? 0)} {props.listPrice ? 'at list price (not billed)' : 'retained'} · {Math.round(ledger().summary.cacheHitRatio * 100)}% cached
               <Show when={(ledger().summary.cost?.unpricedCalls ?? 0) > 0}>
                 {' '}· <span class="text-amber-400">{ledger().summary.cost!.unpricedCalls} unpriced</span>
               </Show>
@@ -181,10 +186,10 @@ function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null }) {
           <div class="grid grid-cols-[4.7rem_3.5rem_3rem_4rem_4rem_4rem_4rem_4.7rem_minmax(8rem,1fr)] gap-x-2 px-2 py-1 bg-neutral-900 text-[9px] uppercase tracking-wider text-neutral-600">
             <span>time</span><span>origin</span><span>msgs</span><span class="text-right">in</span>
             <span class="text-right">read</span><span class="text-right">write</span><span class="text-right">out</span>
-            <span class="text-right">cost</span><span>verdict / cause</span>
+            <span class="text-right">{props.listPrice ? 'list $' : 'cost'}</span><span>verdict / cause</span>
           </div>
           <div class="max-h-80 overflow-y-auto divide-y divide-neutral-900">
-            <For each={rows()}>{(row) => <CallLedgerRowView row={row} />}</For>
+            <For each={rows()}>{(row) => <CallLedgerRowView row={row} listPrice={props.listPrice} />}</For>
           </div>
         </div>
         <div class="mt-1 text-[9px] text-neutral-600">
@@ -195,7 +200,7 @@ function CallLedgerSection(props: { ledger: CallLedgerSnapshot | null }) {
   );
 }
 
-function CallLedgerRowView(props: { row: CallLedgerRow }) {
+function CallLedgerRowView(props: { row: CallLedgerRow; listPrice?: boolean }) {
   const time = (): string => {
     const d = new Date(props.row.timestamp);
     return Number.isNaN(d.getTime()) ? '?' : d.toLocaleTimeString([], { hour12: false });
@@ -228,7 +233,7 @@ function CallLedgerRowView(props: { row: CallLedgerRow }) {
       <span class="text-right text-amber-300">{fmt(props.row.tokens.cacheWrite)}</span>
       <span class="text-right text-neutral-400">{fmt(props.row.tokens.output)}</span>
       <span
-        class={`text-right ${props.row.cost ? 'text-emerald-300' : 'text-amber-500'}`}
+        class={`text-right ${props.row.cost ? (props.listPrice ? 'text-neutral-500' : 'text-emerald-300') : 'text-amber-500'}`}
         title={costTitle()}
       >
         {props.row.cost ? `$${fmtCost(props.row.cost.total)}` : 'unpriced'}
