@@ -1393,7 +1393,7 @@ export class WebUiModule implements Module {
         return this.serveStatic(join(requestedPath, 'index.html'), opts);
       }
       const data = await readFile(safePath);
-      return new Response(data, { headers: { 'content-type': mimeFor(safePath) } });
+      return new Response(data, { headers: { 'content-type': mimeFor(safePath), 'cache-control': cacheControlFor(safePath) } });
     } catch {
       // Missing bundle assets are honest misses, not SPA routes.
       if (!spaFallback) {
@@ -1403,7 +1403,7 @@ export class WebUiModule implements Module {
       try {
         const indexPath = join(sharedServer!.staticRoot, 'index.html');
         const data = await readFile(indexPath);
-        return new Response(data, { headers: { 'content-type': 'text/html' } });
+        return new Response(data, { headers: { 'content-type': 'text/html', 'cache-control': cacheControlFor(indexPath) } });
       } catch {
         return new Response(
           `WebUI bundle not found at ${sharedServer!.staticRoot}. Run \`npm run build:web\` (or postinstall) to produce it.`,
@@ -3589,6 +3589,20 @@ function aggregateFleetUsage(ss: SharedServerState): TokenUsage {
     out.cost = { total: costTotal, currency: costCurrency };
   }
   return out;
+}
+
+/**
+ * Cache policy for the SPA. Vite emits content-hashed files under
+ * `assets/`, so those are safe to cache forever; `index.html` is the one
+ * mutable entry point and must always be revalidated — with no header at
+ * all, browsers applied heuristic caching and a tab could keep pairing a
+ * stale index with a stale bundle across bundle swaps (2026-09-21, Fable).
+ */
+function cacheControlFor(path: string): string {
+  if (/[\\/]assets[\\/][^\\/]+-[A-Za-z0-9_-]{6,}\.[a-z0-9]+$/.test(path)) {
+    return 'public, max-age=31536000, immutable';
+  }
+  return 'no-cache';
 }
 
 function mimeFor(path: string): string {
