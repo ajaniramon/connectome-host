@@ -72,6 +72,7 @@ import { buildFrameworkStrategy, buildConversationsConfig } from './framework-st
 import { buildWorkspaceMounts } from './workspace-mounts.js';
 import { logKeepaliveEvent } from './cache-keepalive-log.js';
 import { loadExtensions } from './extensions.js';
+import { QuotaMeter, AnthropicOAuthQuotaSource, CodexQuotaSource, quotaProviderHold } from './quota-meter.js';
 
 export type { AppContext };
 
@@ -117,6 +118,9 @@ interface AppContext {
    *  layer (health snapshots) in BOTH runtimes — WebUI host and headless
    *  fleet child. Null when the provider adapter exposes no ledger. */
   callLedger: CallLedger | null;
+  /** Subscription quota windows; null on metered (pay-per-token) providers.
+   *  Its presence is what flips usage readouts from dollars to percent. */
+  quotaMeter: QuotaMeter | null;
 
   /** Stop current framework, switch to a different session, start new framework. */
   switchSession(id: string): Promise<void>;
@@ -185,6 +189,7 @@ async function createFramework(
   agentName: string,
   settingsModule: SettingsModule,
   callLedger: CallLedger | null,
+  quotaMeter: QuotaMeter | null,
 ): Promise<AgentFramework> {
   const model = resolveModel(recipe);
   const modules = recipe.modules ?? {};
@@ -394,6 +399,7 @@ async function createFramework(
       allowedOrigins: webuiConfig.allowedOrigins,
       observersPath,
       ...(callLedger ? { callLedger } : {}),
+      ...(quotaMeter ? { quotaMeter } : {}),
     });
     moduleInstances.push(webUiModule);
     moduleInstances.push(new ObserversModule({
@@ -516,6 +522,9 @@ agents: [agentConfig],
     mcplServers: finalServers,
     gate: gateOptions,
     timeZone,
+    // A 429 while a subscription window is spent is a quota, not a throttle:
+    // park until it resets instead of retrying into it.
+    ...(quotaMeter ? { providerHold: quotaProviderHold(quotaMeter, () => model) } : {}),
     // Client-side programmatic tool calling (code_execution) — recipe opt-in.
     ...(recipe.codeExecution ? { codeExecution: recipe.codeExecution } : {}),
     ...(conversations ? { conversations } : {}),
@@ -906,6 +915,16 @@ async function main() {
         fastMode: recipe.agent.codex?.fastMode ?? false,
       })
     : undefined;
+  // Subscription credentials draw down utilization windows instead of being
+  // billed per token; the meter reads them out-of-band (no inference spend).
+  const quotaMeter = provider === 'anthropic' && config.authToken
+    ? new QuotaMeter(new AnthropicOAuthQuotaSource({
+        authToken: config.authToken,
+        baseURL: process.env.ANTHROPIC_BASE_URL || undefined,
+      }))
+    : codexAdapter
+      ? new QuotaMeter(new CodexQuotaSource(() => codexAdapter.readRateLimits()))
+      : null;
   // Generic OpenAI-compatible chat-completions endpoint (Ollama, vLLM, Together,
   // Groq, NanoGPT, ...). The recipe carries the endpoint (agent.baseUrl,
   // validated at load); the key is optional because local servers have none.
@@ -1148,7 +1167,7 @@ async function main() {
   });
 
   const storePath = sessionManager.getStorePath(activeSession.id);
-  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger);
+  const framework = await createFramework(membrane, storePath, recipe, agentName, settingsModule, callLedger, quotaMeter);
 
   // Build app context
   const app: AppContext = {
@@ -1161,6 +1180,7 @@ async function main() {
     userMessageCount: 0,
     codexAdapter,
     callLedger,
+    quotaMeter,
 
     async switchSession(id: string) {
       handleExport(this);
@@ -1171,7 +1191,7 @@ async function main() {
       // re-resolution would matter only if recipe.agent.name is absent
       // AND the user switches between imports that used different
       // --agent values; not the canonical flow.
-      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger);
+      this.framework = await createFramework(membrane, newStorePath, recipe, this.agentName, settingsModule, callLedger, quotaMeter);
       this.framework.start();
       this.userMessageCount = 0;
       resetBranchState(this.branchState);

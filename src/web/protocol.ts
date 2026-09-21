@@ -273,6 +273,27 @@ export interface TokenUsage {
   cost?: { total: number; currency: string };
 }
 
+/** `/quota` answer. `subscription: false` = pay-per-token host: keep showing
+ *  dollars and stop polling. Windows are provider-neutral, longest first. */
+export interface QuotaSnapshotData {
+  subscription: boolean;
+  provider?: string;
+  windows: Array<{
+    key: string;
+    label: string;
+    /** Percent used, 0–100. */
+    utilization: number;
+    /** Epoch ms. */
+    resetsAt?: number;
+    model?: string;
+    advisory?: boolean;
+  }>;
+  fetchedAt?: number;
+  error?: string;
+  /** Epoch ms until which inference is parked on a spent window, else null. */
+  blockedUntil?: number | null;
+}
+
 /** Per-agent cost slice used by the WebUI usage panel to label rows. Only
  *  surfaces parent-process agents — fleet-child agents track their own
  *  usage in their own UsageTracker and aren't aggregated cross-process. */

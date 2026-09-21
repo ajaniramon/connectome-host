@@ -45,6 +45,7 @@ import type { Recipe } from '../recipe.js';
 import type { SessionManager } from '../session-manager.js';
 import type { BranchState } from '../commands.js';
 import type { CallLedger } from '../call-ledger.js';
+import type { QuotaMeter } from '../quota-meter.js';
 import { handleCommand } from '../commands.js';
 import { AgentTreeReducer, type AgentTreeSnapshot } from '../state/agent-tree-reducer.js';
 import { FleetTreeAggregator } from '../state/fleet-tree-aggregator.js';
@@ -84,6 +85,7 @@ import {
   buildSettingsState,
   buildPinsSnapshot,
   buildHealthSnapshot,
+  buildQuotaSnapshot,
   buildContextCoverage,
   buildContextMakeup,
   buildContextCurve,
@@ -168,6 +170,8 @@ export interface WebUiModuleConfig {
   observersPath?: string;
   /** Content-free recent provider-call ledger for spend/cache diagnostics. */
   callLedger?: CallLedger;
+  /** Subscription quota windows (hosts on a subscription credential only). */
+  quotaMeter?: QuotaMeter;
 }
 
 /** Data stashed on the Bun WS upgrade. */
@@ -219,6 +223,7 @@ const HTTP_PANEL_OPS: Record<string, string> = {
   '/debug/context/maintenance': 'context-maintenance',
   '/debug/context': 'debug-context',
   '/healthz': 'health',
+  '/quota': 'quota',
 };
 
 /** True when a wire `scope` field names a fleet child (vs the local process). */
@@ -1022,6 +1027,7 @@ export class WebUiModule implements Module {
     const isStatic = !url.pathname.startsWith('/debug/')
       && url.pathname !== '/curve'
       && url.pathname !== '/healthz'
+      && url.pathname !== '/quota'
       && !url.pathname.startsWith('/files/')
       && !url.pathname.startsWith('/media/');
     if (!basicOk && !(observersActive && isStatic) && !sessionScopes) {
@@ -1032,7 +1038,7 @@ export class WebUiModule implements Module {
     if ((url.pathname.startsWith('/debug/') || url.pathname === '/curve') && !httpAllowed('debug')) {
       return this.unauthorized(isRetrievalTraceRoute);
     }
-    if (url.pathname === '/healthz' && !httpAllowed('health')) {
+    if ((url.pathname === '/healthz' || url.pathname === '/quota') && !httpAllowed('health')) {
       return this.unauthorized();
     }
     if (url.pathname.startsWith('/files/') && !basicOk) {
@@ -1125,6 +1131,13 @@ export class WebUiModule implements Module {
       }
     }
 
+    // Subscription quota windows, polled by the SPA only while it is visible.
+    if (url.pathname === '/quota') {
+      const app = this.panelApp();
+      if (!app) return Response.json({ error: 'app not bound yet' }, { status: 503 });
+      return Response.json(await buildQuotaSnapshot(app));
+    }
+
     // Workspace file passthrough: /files/<mount>/<path...>
     // Resolves through WorkspaceModule.resolveAbsolutePath, which enforces
     // mount-relative containment and the mount's read-permission. We never
@@ -1154,7 +1167,12 @@ export class WebUiModule implements Module {
   private panelApp(): PanelAppRef | null {
     const app = sharedServer?.app;
     if (!app) return null;
-    return { framework: app.framework, recipe: app.recipe, callLedger: this.config.callLedger ?? null };
+    return {
+      framework: app.framework,
+      recipe: app.recipe,
+      callLedger: this.config.callLedger ?? null,
+      quotaMeter: this.config.quotaMeter ?? null,
+    };
   }
 
   private fleetModule(): FleetModule | undefined {

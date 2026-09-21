@@ -20,6 +20,7 @@ import type {
   CallLedgerSnapshot,
   CallLedgerRow,
   CallLedgerVerdict,
+  QuotaSnapshotData,
 } from '@conhost/web/protocol';
 
 export function UsagePanel(props: {
@@ -34,8 +35,12 @@ export function UsagePanel(props: {
    *  the process usage view rather than pretending it can be split across
    *  fleet children. */
   callLedger: CallLedgerSnapshot | null;
+  /** Subscription quota windows. On a subscription host every dollar figure
+   *  in this panel is list-price fiction, so they give way to these. */
+  quota: QuotaSnapshotData | null;
   onClose(): void;
 }) {
+  const onSubscription = (): boolean => props.quota?.subscription === true;
   const costFor = (agentName: string): { total: number; currency: string } | undefined => {
     return props.perAgentCost.find(c => c.name === agentName)?.cost;
   };
@@ -96,8 +101,36 @@ export function UsagePanel(props: {
       <div class="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11px] space-y-3">
         <section>
           <div class="text-neutral-500 uppercase tracking-wider text-[10px] mb-1">{headline()}</div>
-          <TotalsBlock totals={totals()} />
+          <TotalsBlock totals={onSubscription() ? { ...totals(), cost: undefined } : totals()} />
         </section>
+
+        <Show when={onSubscription() && props.quota!.windows.length > 0}>
+          <section>
+            <div class="text-neutral-500 uppercase tracking-wider text-[10px] mb-1">
+              subscription quota · {props.quota!.provider}
+            </div>
+            <div class="grid grid-cols-[auto_auto_1fr] gap-x-3 gap-y-0.5">
+              <For each={props.quota!.windows}>
+                {(w) => (
+                  <>
+                    <div class="text-neutral-500">{w.label}</div>
+                    <div class={`text-right ${w.utilization >= 90 ? 'text-rose-400' : w.utilization >= 75 ? 'text-amber-400' : 'text-emerald-300'}`}>
+                      {Math.floor(w.utilization)}%
+                    </div>
+                    <div class="text-neutral-500 text-right">
+                      {w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString()}` : ''}
+                    </div>
+                  </>
+                )}
+              </For>
+            </div>
+            <Show when={props.quota!.blockedUntil}>
+              <div class="text-rose-400 mt-1">
+                inference parked until {new Date(props.quota!.blockedUntil!).toLocaleString()}
+              </div>
+            </Show>
+          </section>
+        </Show>
 
         <Show when={breakdown().length > 0}>
           <section>
