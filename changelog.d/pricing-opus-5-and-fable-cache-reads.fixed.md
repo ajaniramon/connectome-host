@@ -6,6 +6,11 @@
   that re-reads a large cached prefix on every call spends most of its bill on
   cache reads, so the flat multiplier overstated its total several-fold. Cache
   reads on all other models, and input, output, and cache writes on the 5.1
-  pair, are unchanged. `ANTHROPIC_PRICING_VERSION` moves to
-  `anthropic-public-2026-09-10`, so replayed JSONL is re-priced under a
-  version string that says which table produced it.
+  pair, are unchanged.
+- Operator ledger: price Claude Sonnet 5 at $2/$10 for every call. The table
+  still switched it to $3/$15 on 2026-09-01, but that scheduled increase was
+  withdrawn and the introductory rate became the standard one, so every
+  Sonnet 5 call since September 1 was overstated by half.
+- `ANTHROPIC_PRICING_VERSION` moves to `anthropic-public-2026-09-21`, so
+  replayed JSONL is re-priced under a version string that says which table
+  produced it.

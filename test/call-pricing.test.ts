@@ -114,10 +114,25 @@ describe('Anthropic per-call pricing', () => {
     expect(us?.cacheRead).toBeCloseTo(0.275, 9);
   });
 
-  test('honors the published Sonnet 5 promotional cutoff', () => {
-    const promo = priceAnthropicCall('claude-sonnet-5', '2026-08-31T23:59:59Z', usage({ inputTokens: 1_000_000 }));
-    const standard = priceAnthropicCall('claude-sonnet-5', '2026-09-01T00:00:00Z', usage({ inputTokens: 1_000_000 }));
-    expect(promo?.total).toBe(2);
-    expect(standard?.total).toBe(3);
+  test('prices Sonnet 5 at $2/$10 after September 1, the withdrawn increase date', () => {
+    // the introductory rate became the standard one; the scheduled move to
+    // $3/$15 on 2026-09-01 never happened, so no call is priced at it
+    const all = usage({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      cacheWrite5mTokens: 1_000_000,
+      cacheWrite1hTokens: 1_000_000,
+    });
+    const after = priceAnthropicCall('claude-sonnet-5', '2026-09-19T12:00:00Z', all);
+    expect(after?.input).toBe(2);
+    expect(after?.output).toBe(10);
+    expect(after?.cacheRead).toBeCloseTo(0.2, 9);
+    expect(after?.cacheWrite5m).toBeCloseTo(2.5, 9);
+    expect(after?.cacheWrite1h).toBeCloseTo(4, 9);
+    expect(after?.total).toBeCloseTo(18.7, 9);
+
+    const before = priceAnthropicCall('claude-sonnet-5', '2026-08-31T23:59:59Z', all);
+    expect(before?.total).toBeCloseTo(18.7, 9);
   });
 });

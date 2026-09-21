@@ -5,20 +5,20 @@
  * authoritative usage buckets. Cache creation MUST remain split by TTL:
  * Anthropic bills 5m writes at 1.25x input and 1h writes at 2x input.
  *
- * Cache READS are 0.1x input on every model but one: Claude Fable 5.1 reads
- * at 0.025x ($0.25/MTok), a quarter of Fable 5's rate. That exception is not
- * cosmetic for long-lived agents — a resident re-reading a 260k prefix on
- * every call spends most of its bill on cache reads, so charging them at 0.1x
- * overstates its total roughly fourfold.
+ * Cache READS are 0.1x input on every model but two: Claude Fable 5.1 and
+ * Claude Mythos 5.1 read at 0.025x ($0.25/MTok), a quarter of the 5 pair's
+ * rate. That exception is not cosmetic for long-lived agents — a resident
+ * re-reading a 260k prefix on every call spends most of its bill on cache
+ * reads, so charging them at 0.1x overstates its total roughly fourfold.
  *
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
- * Snapshot: 2026-09-10. Keep the version string/date auditable; silently
+ * Snapshot: 2026-09-21. Keep the version string/date auditable; silently
  * changing historical prices would make old JSONL replay disagree with bills.
  */
 
 import type { CallCostBreakdown } from './web/protocol.js';
 
-export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-09-10';
+export const ANTHROPIC_PRICING_VERSION = 'anthropic-public-2026-09-21';
 
 /** Cache reads bill at this multiple of base input on every model that does
  *  not override it. */
@@ -46,10 +46,12 @@ export interface PriceableCallUsage {
 
 export function priceAnthropicCall(
   model: string,
-  timestamp: string,
+  // No rate in the current table is date-bounded; kept so a future dated
+  // price change does not have to re-plumb every caller.
+  _timestamp: string,
   usage: PriceableCallUsage,
 ): CallCostBreakdown | undefined {
-  const rate = anthropicBaseRate(model, timestamp);
+  const rate = anthropicBaseRate(model);
   if (!rate || usage.unclassifiedCacheWriteTokens > 0) return undefined;
 
   // Public list pricing covers standard service. Priority Tier is contract
@@ -89,7 +91,7 @@ export function priceAnthropicCall(
   };
 }
 
-function anthropicBaseRate(model: string, timestamp: string): BaseRate | undefined {
+function anthropicBaseRate(model: string): BaseRate | undefined {
   // The 5.1 pair first: their prefixes also match the Fable 5 / Mythos 5 test
   // below, and they are the two models that read from cache at 0.025x rather
   // than 0.1x. The pricing page's footnote on the cache-hit column: "Cache
@@ -110,12 +112,13 @@ function anthropicBaseRate(model: string, timestamp: string): BaseRate | undefin
     'claude-opus-4-5',
   )) return rate(5, 25);
 
-  // Sonnet 5 launch pricing is promotional through 2026-08-31 inclusive.
-  if (starts(model, 'claude-sonnet-5')) {
-    const at = Date.parse(timestamp);
-    const promoEnd = Date.parse('2026-09-01T00:00:00Z');
-    return Number.isFinite(at) && at < promoEnd ? rate(2, 10) : rate(3, 15);
-  }
+  // Sonnet 5 launched at $2/$10 as introductory pricing through 2026-08-31,
+  // with a move to $3/$15 scheduled for 2026-09-01. That increase was
+  // withdrawn: "The $2/$10 per million input/output token pricing for Claude
+  // Sonnet 5 ... is now the standard price. The previously scheduled increase
+  // to $3/$15 ... on September 1, 2026 will not occur." (pricing page, read
+  // 2026-09-21.) So there is no cutoff; every call is $2/$10.
+  if (starts(model, 'claude-sonnet-5')) return rate(2, 10);
 
   if (starts(model,
     'claude-sonnet-4-6',
