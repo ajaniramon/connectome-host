@@ -25,6 +25,7 @@ import { join, resolve } from 'node:path';
 import type { AppContext } from './index.js';
 import { type IncomingCommand, matchesSubscription } from './modules/fleet-types.js';
 import { AgentTreeReducer } from './state/agent-tree-reducer.js';
+import { takeRecipeWarnings } from './recipe.js';
 
 // ---------------------------------------------------------------------------
 // Local types
@@ -100,6 +101,8 @@ export async function runHeadless(app: AppContext, argv: string[] = []): Promise
   };
 
   log(`headless start pid=${process.pid} dataDir=${dataDir} socket=${socketPath}`);
+  // The recipe was validated before this redirect: its warnings go into this log too.
+  for (const warning of takeRecipeWarnings()) log(`warning: ${warning}`);
 
   // -- Stale socket cleanup --
   // If a previous instance crashed without unlink, listen() would EADDRINUSE.

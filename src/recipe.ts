@@ -1532,7 +1532,8 @@ export function unknownRecipeKeys(raw: unknown): string[] {
     for (const key of Object.keys(value)) {
       if (known.includes(key)) continue;
       const path = `${prefix}${key}`;
-      const retired = RETIRED_RECIPE_KEYS[path];
+      // Own properties only: `constructor` or `__proto__` must not find Object's.
+      const retired = Object.hasOwn(RETIRED_RECIPE_KEYS, path) ? RETIRED_RECIPE_KEYS[path] : undefined;
       const near = retired ? null : nearestRecipeKey(key, known);
       found.push(retired ? `${path} (replaced by ${retired})` : near ? `${path} (did you mean ${prefix}${near}?)` : path);
     }
@@ -1541,6 +1542,20 @@ export function unknownRecipeKeys(raw: unknown): string[] {
   check('agent.', obj.agent, RECIPE_AGENT_KEYS);
   check('modules.', obj.modules, RECIPE_MODULE_KEYS);
   return found;
+}
+
+/**
+ * Warnings from recipe validation, kept for the runtime that takes stderr over
+ * later (the TUI's tui-error.log, headless.log): the recipe is validated before
+ * either redirect, so the console line alone would never reach those logs.
+ * Bounded, for a long-running host that keeps loading recipes (fleet, WebUI).
+ */
+const pendingRecipeWarnings: string[] = [];
+const MAX_PENDING_RECIPE_WARNINGS = 50;
+
+/** The recipe warnings not yet taken, oldest first; taking them clears them. */
+export function takeRecipeWarnings(): string[] {
+  return pendingRecipeWarnings.splice(0);
 }
 
 /**
@@ -1560,7 +1575,10 @@ export function validateRecipe(raw: unknown): Recipe {
   // Nothing below reads an unknown key: say so, and what it was probably meant to be.
   const unknownKeys = unknownRecipeKeys(obj);
   if (unknownKeys.length > 0) {
-    console.warn(`Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`);
+    const warning = `Recipe "${obj.name}" has keys the host does not read (ignored): ${unknownKeys.join(', ')}.`;
+    console.warn(warning);
+    pendingRecipeWarnings.push(warning);
+    if (pendingRecipeWarnings.length > MAX_PENDING_RECIPE_WARNINGS) pendingRecipeWarnings.shift();
   }
 
   const agent = obj.agent as Record<string, unknown>;

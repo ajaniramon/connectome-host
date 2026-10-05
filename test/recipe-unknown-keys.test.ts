@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
-import { unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
+import { takeRecipeWarnings, unknownRecipeKeys, validateRecipe } from '../src/recipe.js';
 
 const base = (extra: Record<string, unknown> = {}, agent: Record<string, unknown> = {}) => ({
   name: 'Test',
@@ -35,6 +35,15 @@ describe('unknownRecipeKeys', () => {
     expect(unknownRecipeKeys(base({ modules: { files: false } }))).toEqual(['modules.files (replaced by modules.workspace)']);
   });
 
+  test('a key named like an inherited property gets no false replacement', () => {
+    const raw = JSON.parse('{"name":"T","agent":{"constructor":1},"__proto__":{"x":1},"constructor":1}');
+    const found = unknownRecipeKeys(raw);
+    expect(found).toContain('__proto__');
+    expect(found).toContain('constructor');
+    expect(found).toContain('agent.constructor');
+    expect(found.some((k) => k.includes('replaced by'))).toBe(false);
+  });
+
   test('ignores what it cannot walk', () => {
     expect(unknownRecipeKeys(null)).toEqual([]);
     expect(unknownRecipeKeys([])).toEqual([]);
@@ -60,8 +69,21 @@ describe('validateRecipe and unknown keys', () => {
 
   test('says nothing about a recipe of known keys', () => {
     warn = spyOn(console, 'warn').mockImplementation(() => {});
+    takeRecipeWarnings();
     validateRecipe(base({ mcpServers: {} }));
     expect(warn).not.toHaveBeenCalled();
+    expect(takeRecipeWarnings()).toEqual([]);
+  });
+
+  test('keeps the warning for the runtime log, taken once', () => {
+    // The TUI and headless redirect stderr after the recipe is validated: they write these into their logs.
+    warn = spyOn(console, 'warn').mockImplementation(() => {});
+    takeRecipeWarnings();
+    validateRecipe(base({ mcplServers: {} }));
+    const taken = takeRecipeWarnings();
+    expect(taken).toHaveLength(1);
+    expect(taken[0]).toContain('mcplServers (did you mean mcpServers?)');
+    expect(takeRecipeWarnings()).toEqual([]);
   });
 });
 

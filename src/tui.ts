@@ -40,6 +40,7 @@ import type { WireEvent } from './modules/fleet-types.js';
 import { parseFleetRoute } from './modules/fleet-types.js';
 import { handleCommand, resetBranchState } from './commands.js';
 import { formatQuotaReadout } from './quota-meter.js';
+import { takeRecipeWarnings } from './recipe.js';
 
 /** Format a token count compactly: 1.2M / 3.5k / 42. */
 export function fmtTokens(n: number): string {
@@ -275,6 +276,8 @@ export async function runTui(app: AppContext): Promise<void> {
   const logPath = `${logDir}/tui-error.log`;
   const logStream = createWriteStream(logPath, { flags: 'a' });
   logStream.write(`\n--- session ${new Date().toISOString()} ---\n`);
+  // The recipe was validated before the TUI took the terminal: its warnings go into this log.
+  for (const warning of takeRecipeWarnings()) logStream.write(`warning: ${warning}\n`);
   const origStderrWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
     logStream.write(chunk);
